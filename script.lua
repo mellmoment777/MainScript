@@ -583,7 +583,7 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = CoreGuiScreenGui.Parent = (typeof(gethui) == "function" and gethui()) 
+ScreenGui.Parent = (typeof(gethui) == "function" and gethui()) 
     or game.Players.LocalPlayer.PlayerGui
 
 local Main = Instance.new("Frame")
