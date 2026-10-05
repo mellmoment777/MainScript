@@ -1,14 +1,20 @@
 -- ════════════════════════════════════
--- COINMASTER MM2 v5.0
+-- COINMASTER MM2 v6.0
 -- by dj | engine rewrite | oct 2026
 -- ════════════════════════════════════
--- [CRIT FIX] FTI аргументы: firetouchinterest(coinPart, hrp, 0/1) — в v4 было наоборот
--- [NEW] smoothTP: lerp + velocity=zero каждый шаг → нет "invalid position"
--- [NEW] NoCollide-система: workspace BasePart → CanCollide=false клиентски
--- [NEW] DescendantAdded watcher: новые части тоже получают NoCollide
--- [OPT] Дебаунс _collectedCoins: нет двойного счёта
--- [OPT] Кэш монет, инвалидация между раундами
--- [FIX] Счёт монет: только в основном цикле через дебаунс
+-- [CRIT v6.1] HeadEdgeOffset 3.0 → 1.5
+--             в v5 голова не достигала монеты, Touch не срабатывал
+-- [CRIT v6.2] NoCollide исключает монеты (isCoinPart → TouchTransmitter check)
+--             CanCollide=false на монете убивает Touched event без FTI —
+--             это был основной баг "собирается 2-3"
+-- [CRIT v6.3] FTI вызывается ПОСЛЕ smoothTP к монете (HRP ~1.5 ст. от цели)
+--             дальний FTI с Y=-50 не триггерил Touched на сервере MM2
+-- [CRIT v6.4] collectCoin не возвращается на hideSpot после каждой монеты
+-- [NEW  v6.5] runCoinRoute: greedy nearest-neighbor, монета→монета
+--             возврат на hideSpot только после завершения всего маршрута
+-- [NEW  v6.6] smoothTP distance-based: duration = dist / FlySpeed (studs/sec)
+--             фикс 0.18с на любую дистанцию → "invalid position" от античита
+-- [NEW  v6.7] CFG.FlySpeed / CoinPauseTime / CoinDelay / CoinDelayRng
 -- ════════════════════════════════════
 
 if getgenv().CM_LOADED then
@@ -31,19 +37,21 @@ local CFG = {
     Enabled        = false,
     AntiAFK        = true,
     AutoReset      = true,
-    DelayMin       = 1.8,
-    DelayMax       = 3.2,
+    DelayMin       = 1.5,         -- пауза между проходами монет (сек)
+    DelayMax       = 2.5,
     CoinType       = "Coin_Server",
     StealthMode    = true,
     ImproveFPS     = false,
     ShowStats      = true,
-    InvisCollect   = true,    -- FTI под картой (ноль видимости)
-    HeadEdgeOffset = 3.0,     -- R6: HRP.Y = coin.Y - 3.0
-    SmoothDur      = 0.18,    -- секунды lerp (HeadEdge)
-    NoCollide      = true,    -- клиентский CanCollide=false для workspace
+    FTIAssist      = true,        -- FTI поверх HeadEdge (двойная надёжность)
+    HeadEdgeOffset = 1.5,         -- v6: HRP.Y = coin.Y - 1.5 → голова на уровне монеты
+    FlySpeed       = 10,          -- studs/sec (~10 не кикает, ~20 рискованно)
+    CoinPauseTime  = 0.18,        -- пауза после достижения монеты (Touch event)
+    CoinDelay      = 0.20,        -- базовая пауза между монетами
+    CoinDelayRng   = 0.25,        -- случайная добавка к CoinDelay
+    NoCollide      = true,
 }
 
--- Проверяем FTI в этом экзекуторе
 local HAS_FTI = typeof(firetouchinterest) == "function"
 
 -- ════ СТАТИСТИКА ═════════════════════
@@ -53,11 +61,9 @@ local STATS = {
     RoundsPlayed   = 0,
     SessionStart   = os.clock(),
 }
--- Дебаунс: instance → true после сбора. Сбрасывается между раундами.
 local _collectedCoins = {}
 
 -- ════ БЕЗОПАСНОЕ МЕСТО ═══════════════
--- Y = -50: ниже карты, выше killplane MM2 (обычно < -100)
 local HIDE_X = math.random(-8, 8)
 local HIDE_Z = math.random(-8, 8)
 local HIDE_Y = -50
@@ -78,17 +84,21 @@ local hideSpot = CFrame.new(
 )
 
 -- ════ NO-COLLIDE СИСТЕМА ═════════════
--- Клиентски выключаем CanCollide на всех workspace.BasePart
--- кроме safePart и частей персонажа.
--- → Фазинг сквозь геометрию без physics bounce.
--- → Сервер ничего не видит — только локальный physics.
-
+-- v6: монеты исключены — CanCollide=false на монете убивает Touch events
 local noCollideConn = nil
+
+local function isCoinPart(part)
+    for _, child in ipairs(part:GetChildren()) do
+        if child:IsA("TouchTransmitter") then return true end
+    end
+    return false
+end
 
 local function shouldSkipPart(part)
     if part == safePart then return true end
     local char = LP.Character
     if char and part:IsDescendantOf(char) then return true end
+    if isCoinPart(part) then return true end  -- v6 FIX: монеты сохраняют CanCollide
     return false
 end
 
@@ -112,15 +122,11 @@ local function enableNoCollide()
 end
 
 local function stopNoCollide()
-    if noCollideConn then
-        noCollideConn:Disconnect()
-        noCollideConn = nil
-    end
-    safePart.CanCollide = true -- safePart остаётся твёрдой всегда
+    if noCollideConn then noCollideConn:Disconnect(); noCollideConn = nil end
+    safePart.CanCollide = true
 end
 
 -- ════ ХЕЛПЕРЫ ════════════════════════
-
 local function getHRP()
     local char = LP.Character
     if not char then return nil end
@@ -136,25 +142,27 @@ local function safeTP(cf)
     end)
 end
 
--- Плавный TP: lerp за duration секунд, velocity = zero каждый шаг.
--- Smoothstep (t²(3-2t)): мягкий старт и стоп → не триггерит speed-чеки.
--- Прерывается если CFG.Enabled = false или персонаж умер.
-local function smoothTP(targetCF, duration)
-    duration = duration or CFG.SmoothDur
+-- v6: distance-based duration, не фиксированный 0.18с
+-- smoothstep (t²(3-2t)): мягкий старт и конец
+local function smoothTP(targetCF, speed)
+    speed = speed or CFG.FlySpeed
     local char = LP.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local startCF = hrp.CFrame
-    local elapsed = 0
+    local startCF  = hrp.CFrame
+    local dist     = (startCF.Position - targetCF.Position).Magnitude
+    if dist < 0.3 then return end
+
+    local duration = math.clamp(dist / speed, 0.2, 5.0)
+    local elapsed  = 0
 
     repeat
         local dt = task.wait(0.016)
-        elapsed   = elapsed + dt
-        local t   = math.min(elapsed / duration, 1)
-        local a   = t * t * (3 - 2 * t) -- smoothstep
-
+        elapsed  = elapsed + dt
+        local t  = math.min(elapsed / duration, 1)
+        local a  = t * t * (3 - 2 * t)
         pcall(function()
             if hrp and hrp.Parent then
                 hrp.CFrame   = startCF:Lerp(targetCF, a)
@@ -178,34 +186,26 @@ end
 
 -- ════ ПОИСК КОНТЕЙНЕРА ═══════════════
 local _cachedContainer = nil
-
 local function findContainer()
-    if _cachedContainer and _cachedContainer.Parent then
-        return _cachedContainer
-    end
+    if _cachedContainer and _cachedContainer.Parent then return _cachedContainer end
     _cachedContainer = nil
-
     for _, v in ipairs(workspace:GetChildren()) do
         if v:IsA("Model") then
             local cc = v:FindFirstChild("CoinContainer")
             if cc then _cachedContainer = cc; return cc end
         end
     end
-
     local cc = workspace:FindFirstChild("CoinContainer")
     if cc then _cachedContainer = cc; return cc end
-
     cc = workspace:FindFirstChild("CoinContainer", true)
     if cc then _cachedContainer = cc; return cc end
-
     return nil
 end
 
 -- ════ ПОИСК МОНЕТ ════════════════════
 local COIN_NAMES = {
-    Coin_Server = true, Coin = true,
-    BeachBall   = true, Shell = true,
-    Candy       = true, SnowToken = true, Egg = true,
+    Coin_Server=true, Coin=true, BeachBall=true,
+    Shell=true, Candy=true, SnowToken=true, Egg=true,
 }
 
 local function findCoins()
@@ -213,19 +213,18 @@ local function findCoins()
     local container = findContainer()
     if not container then return coins end
 
-    -- Метод 1: TouchTransmitter (самый точный)
+    -- Метод 1: TouchTransmitter
     for _, v in ipairs(container:GetDescendants()) do
         if v:IsA("TouchTransmitter") then
             local part = v.Parent
             if part and part:IsA("BasePart") and not seen[part]
             and part:IsDescendantOf(workspace) then
-                seen[part] = true
-                table.insert(coins, part)
+                seen[part] = true; table.insert(coins, part)
             end
         end
     end
 
-    -- Метод 2: По имени
+    -- Метод 2: по имени
     if #coins == 0 then
         for _, v in ipairs(container:GetDescendants()) do
             if COIN_NAMES[v.Name] then
@@ -236,22 +235,18 @@ local function findCoins()
                     part = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
                 end
                 if part and not seen[part] and part:IsDescendantOf(workspace) then
-                    seen[part] = true
-                    table.insert(coins, part)
+                    seen[part] = true; table.insert(coins, part)
                 end
             end
         end
     end
 
-    -- Метод 3: Атрибут CoinID
+    -- Метод 3: CoinID атрибут
     if #coins == 0 then
         for _, v in ipairs(container:GetDescendants()) do
             if v:IsA("BasePart") and not seen[v] then
                 local ok, attr = pcall(function() return v:GetAttribute("CoinID") end)
-                if ok and attr then
-                    seen[v] = true
-                    table.insert(coins, v)
-                end
+                if ok and attr then seen[v] = true; table.insert(coins, v) end
             end
         end
     end
@@ -259,7 +254,6 @@ local function findCoins()
     return coins
 end
 
--- ════ ФИЛЬТР ТИПА МОНЕТЫ ════════════
 local function coinMatchesType(coinPart)
     if CFG.CoinType == "All" then return true end
     local ok, attr = pcall(function() return coinPart:GetAttribute("CoinID") end)
@@ -267,45 +261,6 @@ local function coinMatchesType(coinPart)
     if coinPart.Name == CFG.CoinType then return true end
     if coinPart.Parent and coinPart.Parent.Name == CFG.CoinType then return true end
     return false
-end
-
--- ════ СБОР МОНЕТЫ ════════════════════
---
--- [v5 CRIT FIX] FTI порядок аргументов:
---   ПРАВИЛЬНО:    firetouchinterest(coinPart, hrp, 0)  -- монета первая
---   НЕПРАВИЛЬНО:  firetouchinterest(hrp, coinPart, 0)  -- так было в v4 → FTI не работал
---
--- [v5 NEW] HeadEdge:
---   smoothTP к монете → task.wait(0.06) → smoothTP обратно
---   CanCollide=false на workspace → нет physics bounce → нет "invalid position"
---
-local function collectCoin(hrp, coinPart)
-    if not coinPart or not coinPart.Parent then return false end
-    if not coinPart:IsDescendantOf(workspace) then return false end
-
-    if CFG.InvisCollect and HAS_FTI then
-        -- ── FTI: персонаж не двигается ───────────────────────────────
-        pcall(firetouchinterest, coinPart, hrp, 0)   -- [v5 FIX]
-        task.wait(0.08)
-        pcall(firetouchinterest, coinPart, hrp, 1)
-        return true
-    else
-        -- ── HeadEdge: smooth lerp к монете и обратно ─────────────────
-        local jitter = Vector3.new(
-            (math.random() - 0.5) * 0.4,
-            0,
-            (math.random() - 0.5) * 0.4
-        )
-        local targetCF = CFrame.new(
-            coinPart.Position.X + jitter.X,
-            coinPart.Position.Y - CFG.HeadEdgeOffset,
-            coinPart.Position.Z + jitter.Z
-        )
-        smoothTP(targetCF)       -- плавно летим к монете
-        task.wait(0.06)
-        smoothTP(hideSpot)       -- плавно возвращаемся под карту
-        return true
-    end
 end
 
 -- ════ СТЕЛС ══════════════════════════
@@ -327,6 +282,103 @@ local function isMurdererNearby(pos)
         end
     end
     return false
+end
+
+-- ════ СБОР МОНЕТЫ v6 ═════════════════
+-- Летит К монете краем головы, ждёт Touch event, опционально FTI.
+-- Не возвращается на hideSpot — runCoinRoute управляет маршрутом.
+local function collectCoin(coinPart)
+    if not coinPart or not coinPart.Parent then return false end
+    if not coinPart:IsDescendantOf(workspace) then return false end
+
+    local jitter = Vector3.new(
+        (math.random() - 0.5) * 0.5,
+        0,
+        (math.random() - 0.5) * 0.5
+    )
+    -- HRP.Y = coin.Y - 1.5 → голова (HRP+1.5) ровно на монете
+    local targetCF = CFrame.new(
+        coinPart.Position.X + jitter.X,
+        coinPart.Position.Y - CFG.HeadEdgeOffset,
+        coinPart.Position.Z + jitter.Z
+    )
+
+    smoothTP(targetCF)
+    task.wait(CFG.CoinPauseTime)
+
+    -- FTI теперь работает: HRP рядом с монетой, не на Y=-50
+    if HAS_FTI and CFG.FTIAssist then
+        local hrp = getHRP()
+        if hrp then
+            pcall(function() firetouchinterest(coinPart, hrp, 0) end)
+            task.wait(0.06)
+            pcall(function() firetouchinterest(coinPart, hrp, 1) end)
+        end
+    end
+
+    return true
+end
+
+-- ════ МАРШРУТ GREEDY NEAREST-NEIGHBOR v6 ═════
+-- От текущей позиции → ближайшая монета → следующая ближайшая → ...
+-- Возврат на hideSpot только после всего маршрута (не между монетами).
+local function runCoinRoute()
+    local all = findCoins()
+    local remaining = {}
+    for _, c in ipairs(all) do
+        if c and c.Parent and not _collectedCoins[c] and coinMatchesType(c) then
+            table.insert(remaining, c)
+        end
+    end
+    if #remaining == 0 then return false end
+
+    local anyCollected = false
+
+    while #remaining > 0 do
+        if not CFG.Enabled or bagFull or deadThisRound then break end
+
+        local hrp = getHRP()
+        if not hrp then break end
+
+        -- Ближайшая к текущей позиции HRP
+        local curPos = hrp.CFrame.Position
+        local bestIdx, bestDist = 1, math.huge
+        for i, coin in ipairs(remaining) do
+            if coin and coin.Parent then
+                local d = (coin.Position - curPos).Magnitude
+                if d < bestDist then bestDist = d; bestIdx = i end
+            end
+        end
+
+        local coin = remaining[bestIdx]
+        table.remove(remaining, bestIdx)
+
+        if not coin or not coin.Parent then continue end
+        if _collectedCoins[coin] then continue end
+        if CFG.StealthMode and isMurdererNearby(coin.Position) then continue end
+
+        local ok = collectCoin(coin)
+        if ok then
+            _collectedCoins[coin]  = true
+            STATS.CoinsThisRound  += 1
+            STATS.CoinsTotal      += 1
+            anyCollected = true
+        end
+
+        -- Пауза между монетами
+        task.wait(CFG.CoinDelay + math.random() * CFG.CoinDelayRng)
+
+        -- Убираем исчезнувшие монеты из очереди
+        local fresh = {}
+        for _, c in ipairs(remaining) do
+            if c and c.Parent and not _collectedCoins[c] then
+                table.insert(fresh, c)
+            end
+        end
+        remaining = fresh
+    end
+
+    return anyCollected
 end
 
 -- ════ IMPROVE FPS ════════════════════
@@ -364,6 +416,8 @@ end
 
 -- ════ ФЛАГ СМЕРТИ ════════════════════
 local deadThisRound = false
+local farmActive    = false
+local bagFull       = false
 
 local function hookCharacter(char)
     local hum = char:WaitForChild("Humanoid", 10)
@@ -378,44 +432,32 @@ LP.CharacterAdded:Connect(function(char)
     if CFG.Enabled then
         task.wait(0.3)
         safeTP(hideSpot)
-        -- Переприменяем NoCollide после респавна (новые части персонажа нужно исключить)
-        if CFG.NoCollide then
-            task.delay(0.1, enableNoCollide)
-        end
+        if CFG.NoCollide then task.delay(0.1, enableNoCollide) end
     end
 end)
-if LP.Character then
-    task.spawn(hookCharacter, LP.Character)
-end
+if LP.Character then task.spawn(hookCharacter, LP.Character) end
 
--- ════ СОСТОЯНИЕ РАУНДА ═══════════════
-local farmActive = false
-local bagFull    = false
+-- ════ ДЕТЕКТ РАУНДОВ ═════════════════
 
--- Poll-детект (основной — не зависит от ремоутов)
+-- Poll (основной)
 task.spawn(function()
     local lastCount = 0
     while true do
         task.wait(2)
         local coins = findCoins()
         local count = #coins
-
         if count > 0 and not farmActive then
-            farmActive    = true
-            deadThisRound = false
+            farmActive = true; deadThisRound = false
         elseif count == 0 and lastCount > 0 then
-            farmActive           = false
-            bagFull              = false
-            STATS.RoundsPlayed  += 1
-            STATS.CoinsThisRound = 0
-            _cachedContainer     = nil
-            _collectedCoins      = {} -- сбрасываем дебаунс
+            farmActive = false; bagFull = false
+            STATS.RoundsPlayed += 1; STATS.CoinsThisRound = 0
+            _cachedContainer = nil; _collectedCoins = {}
         end
         lastCount = count
     end
 end)
 
--- Ремоуты (бонус: faster events + AutoReset через мешок)
+-- Ремоуты (бонус)
 task.spawn(function()
     local RS = game:GetService("ReplicatedStorage")
     local function tryPath(...)
@@ -423,14 +465,12 @@ task.spawn(function()
         for _, name in ipairs({...}) do cur = cur and cur:FindFirstChild(name) end
         return cur
     end
-
     local CoinEvent  = tryPath("Remotes","Gameplay","CoinCollected")
     local RoundStart = tryPath("Remotes","Gameplay","RoundStart")
     local RoundEnd   = tryPath("Remotes","Gameplay","RoundEndFade")
                     or tryPath("Remotes","Gameplay","RoundEnd")
 
     if CoinEvent then
-        -- Используем только для детекта полного мешка (счёт в основном цикле)
         CoinEvent.OnClientEvent:Connect(function(_, current, max)
             farmActive = true
             if tonumber(current) and tonumber(max)
@@ -453,79 +493,45 @@ task.spawn(function()
 
     if RoundStart then
         RoundStart.OnClientEvent:Connect(function()
-            farmActive           = true
-            deadThisRound        = false
-            bagFull              = false
-            STATS.RoundsPlayed  += 1
-            STATS.CoinsThisRound = 0
-            _cachedContainer     = nil
-            _collectedCoins      = {}
+            farmActive = true; deadThisRound = false; bagFull = false
+            STATS.RoundsPlayed += 1; STATS.CoinsThisRound = 0
+            _cachedContainer = nil; _collectedCoins = {}
             if CFG.Enabled then safeTP(hideSpot) end
         end)
     end
 
     if RoundEnd then
         RoundEnd.OnClientEvent:Connect(function()
-            farmActive = false
-            bagFull    = false
+            farmActive = false; bagFull = false
         end)
     end
 end)
 
--- Mid-inject: если скрипт инжектнули в активный раунд
+-- Mid-inject: скрипт в активном раунде
 task.delay(2, function()
     if not farmActive then
-        local coins = findCoins()
-        if #coins > 0 then farmActive = true end
+        if #findCoins() > 0 then farmActive = true end
     end
 end)
 
--- ════ ОСНОВНОЙ ЦИКЛ ══════════════════
+-- ════ ОСНОВНОЙ ЦИКЛ v6 ═══════════════
 task.spawn(function()
     while true do
         if CFG.Enabled and farmActive and not bagFull and not deadThisRound then
             local hrp = getHRP()
             if hrp then
-                local coins = findCoins()
-
-                if #coins > 0 then
-                    local useFTI = CFG.InvisCollect and HAS_FTI
-
-                    -- В HeadEdge: начинаем с hideSpot
-                    if not useFTI then safeTP(hideSpot) end
-
-                    -- Сортируем по дистанции от hideSpot (ближние → меньше движения)
-                    local hidePos = hideSpot.Position
-                    table.sort(coins, function(a, b)
-                        return (a.Position - hidePos).Magnitude < (b.Position - hidePos).Magnitude
-                    end)
-
-                    for _, coin in ipairs(coins) do
-                        if bagFull or not CFG.Enabled then break end
-                        if not coin or not coin.Parent then continue end
-                        if _collectedCoins[coin] then continue end         -- дебаунс
-                        if not coinMatchesType(coin) then continue end
-                        if CFG.StealthMode and isMurdererNearby(coin.Position) then continue end
-
-                        hrp = getHRP()
-                        if not hrp then break end
-
-                        local ok = collectCoin(hrp, coin)
-                        if ok then
-                            -- Единственное место счёта — нет двойного учёта
-                            _collectedCoins[coin]  = true
-                            STATS.CoinsThisRound  += 1
-                            STATS.CoinsTotal      += 1
-                        end
-
-                        task.wait(0.10 + math.random() * 0.12)
+                local anyCollected = runCoinRoute()
+                if anyCollected then
+                    -- Возврат на hideSpot только после всего маршрута
+                    hrp = getHRP()
+                    if hrp then
+                        smoothTP(hideSpot, CFG.FlySpeed * 0.7)
                     end
                 else
-                    if farmActive then farmActive = false end
+                    farmActive = false
                 end
             end
         end
-
         task.wait(randDelay())
     end
 end)
@@ -557,8 +563,8 @@ ScreenGui.Parent           = (typeof(gethui) == "function" and gethui())
 
 local Main = Instance.new("Frame")
 Main.Name              = "Main"
-Main.Size              = UDim2.new(0, 265, 0, 530)
-Main.Position          = UDim2.new(0, 16, 0.5, -265)
+Main.Size              = UDim2.new(0, 265, 0, 540)
+Main.Position          = UDim2.new(0, 16, 0.5, -270)
 Main.BackgroundColor3  = Color3.fromRGB(12, 12, 16)
 Main.BorderSizePixel   = 0
 Main.ClipsDescendants  = true
@@ -567,8 +573,8 @@ Main.Parent            = ScreenGui
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
 
 local mainStroke = Instance.new("UIStroke", Main)
-mainStroke.Color       = Color3.fromRGB(255, 210, 0)
-mainStroke.Thickness   = 1.5
+mainStroke.Color        = Color3.fromRGB(255, 210, 0)
+mainStroke.Thickness    = 1.5
 mainStroke.Transparency = 0.4
 
 -- Header
@@ -585,14 +591,14 @@ headerFix.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 headerFix.BorderSizePixel  = 0
 
 local TitleLabel = Instance.new("TextLabel", Header)
-TitleLabel.Size                = UDim2.new(1, -46, 1, 0)
-TitleLabel.Position            = UDim2.new(0, 12, 0, 0)
+TitleLabel.Size                   = UDim2.new(1, -46, 1, 0)
+TitleLabel.Position               = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text                = "🪙 CoinMaster MM2 v5.0"
-TitleLabel.TextColor3          = Color3.fromRGB(255, 210, 0)
-TitleLabel.TextSize            = 13
-TitleLabel.Font                = Enum.Font.GothamBold
-TitleLabel.TextXAlignment      = Enum.TextXAlignment.Left
+TitleLabel.Text                   = "🪙 CoinMaster MM2 v6.0"
+TitleLabel.TextColor3             = Color3.fromRGB(255, 210, 0)
+TitleLabel.TextSize               = 13
+TitleLabel.Font                   = Enum.Font.GothamBold
+TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
 
 local MinBtn = Instance.new("TextButton", Header)
 MinBtn.Size             = UDim2.new(0, 30, 0, 30)
@@ -607,9 +613,9 @@ Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 
 -- Content
 local Content = Instance.new("Frame", Main)
-Content.Name              = "Content"
-Content.Size              = UDim2.new(1, 0, 1, -46)
-Content.Position          = UDim2.new(0, 0, 0, 46)
+Content.Name                   = "Content"
+Content.Size                   = UDim2.new(1, 0, 1, -46)
+Content.Position               = UDim2.new(0, 0, 0, 46)
 Content.BackgroundTransparency = 1
 
 local pad = Instance.new("UIPadding", Content)
@@ -653,13 +659,13 @@ local function makeToggle(label, cfgKey, order, callback)
     row.LayoutOrder            = order
 
     local lbl = Instance.new("TextLabel", row)
-    lbl.Size                    = UDim2.new(0.72, 0, 1, 0)
-    lbl.BackgroundTransparency  = 1
-    lbl.Text                    = label
-    lbl.TextColor3              = Color3.fromRGB(210, 210, 220)
-    lbl.TextSize                = 12
-    lbl.Font                    = Enum.Font.Gotham
-    lbl.TextXAlignment          = Enum.TextXAlignment.Left
+    lbl.Size                   = UDim2.new(0.72, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = label
+    lbl.TextColor3             = Color3.fromRGB(210, 210, 220)
+    lbl.TextSize               = 12
+    lbl.Font                   = Enum.Font.Gotham
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
 
     local track = Instance.new("Frame", row)
     track.Size             = UDim2.new(0, 42, 0, 22)
@@ -712,13 +718,13 @@ local function makeCoinSelector(order)
     row.LayoutOrder            = order
 
     local lbl = Instance.new("TextLabel", row)
-    lbl.Size                    = UDim2.new(0.45, 0, 1, 0)
-    lbl.BackgroundTransparency  = 1
-    lbl.Text                    = "Тип монет"
-    lbl.TextColor3              = Color3.fromRGB(210, 210, 220)
-    lbl.TextSize                = 12
-    lbl.Font                    = Enum.Font.Gotham
-    lbl.TextXAlignment          = Enum.TextXAlignment.Left
+    lbl.Size                   = UDim2.new(0.45, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = "Тип монет"
+    lbl.TextColor3             = Color3.fromRGB(210, 210, 220)
+    lbl.TextSize               = 12
+    lbl.Font                   = Enum.Font.Gotham
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
 
     local types = {"Coin_Server", "All", "BeachBall", "Shell", "Candy"}
     local idx = 1
@@ -738,9 +744,9 @@ local function makeCoinSelector(order)
     Instance.new("UICorner", typeBtn).CornerRadius = UDim.new(0, 6)
 
     typeBtn.MouseButton1Click:Connect(function()
-        idx            = idx % #types + 1
-        CFG.CoinType   = types[idx]
-        typeBtn.Text   = "◀ " .. types[idx] .. " ▶"
+        idx          = idx % #types + 1
+        CFG.CoinType = types[idx]
+        typeBtn.Text = "◀ " .. types[idx] .. " ▶"
     end)
 end
 
@@ -759,8 +765,8 @@ startBtn.LayoutOrder      = 2
 Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 8)
 
 local startBtnStroke = Instance.new("UIStroke", startBtn)
-startBtnStroke.Color       = Color3.fromRGB(255, 210, 0)
-startBtnStroke.Thickness   = 1
+startBtnStroke.Color        = Color3.fromRGB(255, 210, 0)
+startBtnStroke.Thickness    = 1
 startBtnStroke.Transparency = 0.6
 
 local function refreshStartBtn()
@@ -785,11 +791,10 @@ startBtn.MouseButton1Click:Connect(function()
     CFG.Enabled = not CFG.Enabled
     if CFG.Enabled then
         bagFull = false
-        local coins = findCoins()
-        farmActive  = (#coins > 0)
+        farmActive = (#findCoins() > 0)
         safeTP(hideSpot)
         if CFG.NoCollide then enableNoCollide() end
-        local mode = (CFG.InvisCollect and HAS_FTI) and "FTI (невидимый)" or "HeadEdge (smooth)"
+        local mode = (HAS_FTI and CFG.FTIAssist) and "HeadEdge + FTI" or "HeadEdge"
         notify("CoinMaster", "Фарм запущен 🪙 [" .. mode .. "]", 3)
     else
         stopNoCollide()
@@ -809,8 +814,8 @@ makeToggle("Anti-AFK", "AntiAFK", 6, function(v)
 end)
 makeToggle("Авто-сброс при полном мешке", "AutoReset", 7)
 makeToggle("Stealth (обход убийцы)", "StealthMode", 8)
-makeToggle("InvisCollect (FTI под картой)", "InvisCollect", 9)
-makeToggle("NoCollide (фазинг сквозь стены)", "NoCollide", 10, function(v)
+makeToggle("FTI Assist (FireTouch доп.)", "FTIAssist", 9)
+makeToggle("NoCollide (фазинг сквозь карту)", "NoCollide", 10, function(v)
     if CFG.Enabled then
         if v then enableNoCollide() else stopNoCollide() end
     end
@@ -823,16 +828,16 @@ end)
 local ftiLabel = Instance.new("TextLabel", Content)
 ftiLabel.Size                   = UDim2.new(1, 0, 0, 14)
 ftiLabel.BackgroundTransparency = 1
-ftiLabel.Text                   = HAS_FTI
-    and "✓ FTI доступен → невидимый сбор"
-    or  "✗ FTI недоступен → HeadEdge (smooth lerp)"
-ftiLabel.TextColor3             = HAS_FTI
+ftiLabel.Text = HAS_FTI
+    and "✓ FTI доступен → HeadEdge + FireTouch"
+    or  "✗ FTI недоступен → только HeadEdge (физич. касание)"
+ftiLabel.TextColor3 = HAS_FTI
     and Color3.fromRGB(80, 190, 90)
     or  Color3.fromRGB(200, 140, 50)
-ftiLabel.TextSize               = 10
-ftiLabel.Font                   = Enum.Font.Gotham
-ftiLabel.TextXAlignment         = Enum.TextXAlignment.Left
-ftiLabel.LayoutOrder            = 12
+ftiLabel.TextSize       = 10
+ftiLabel.Font           = Enum.Font.Gotham
+ftiLabel.TextXAlignment = Enum.TextXAlignment.Left
+ftiLabel.LayoutOrder    = 12
 
 -- ── Статистика ───────────────────────
 makeDivider(13)
@@ -854,9 +859,7 @@ local dragging, dragStart, startPos = false, nil, nil
 Header.InputBegan:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1
     or inp.UserInputType == Enum.UserInputType.Touch then
-        dragging  = true
-        dragStart = inp.Position
-        startPos  = Main.Position
+        dragging = true; dragStart = inp.Position; startPos = Main.Position
     end
 end)
 UserInput.InputChanged:Connect(function(inp)
@@ -885,7 +888,7 @@ MinBtn.MouseButton1Click:Connect(function()
     TweenService:Create(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {
         Size = minimized
             and UDim2.new(0, 265, 0, 46)
-            or  UDim2.new(0, 265, 0, 530)
+            or  UDim2.new(0, 265, 0, 540)
     }):Play()
     MinBtn.Text = minimized and "+" or "—"
 end)
@@ -895,12 +898,12 @@ task.spawn(function()
     while true do
         task.wait(1)
         if CFG.ShowStats then
-            local elapsed = math.max(1, math.floor(os.clock() - STATS.SessionStart))
-            local mins    = math.floor(elapsed / 60)
-            local secs    = elapsed % 60
-            local rate    = math.floor(STATS.CoinsTotal / elapsed * 60)
+            local elapsed   = math.max(1, math.floor(os.clock() - STATS.SessionStart))
+            local mins      = math.floor(elapsed / 60)
+            local secs      = elapsed % 60
+            local rate      = math.floor(STATS.CoinsTotal / elapsed * 60)
             local coinCount = #findCoins()
-            local mode = (CFG.InvisCollect and HAS_FTI) and "FTI" or "HeadEdge"
+            local mode      = (HAS_FTI and CFG.FTIAssist) and "HE+FTI" or "HeadEdge"
 
             local status
             if not CFG.Enabled then
@@ -932,6 +935,6 @@ end)
 if CFG.AntiAFK then startAntiAFK() end
 
 local initMsg = HAS_FTI
-    and "v5.0 ✓ FTI режим (фикс аргументов)"
-    or  "v5.0 ✓ HeadEdge smooth (NoCollide)"
+    and "v6.0 ✓ HeadEdge + FTI (маршрут монета→монета)"
+    or  "v6.0 ✓ HeadEdge (маршрут монета→монета)"
 notify("CoinMaster", initMsg, 4)
