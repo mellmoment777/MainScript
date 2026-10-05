@@ -1,18 +1,18 @@
 -- ════════════════════════════════════
--- COINMASTER MM2 v7.0
--- by dj | engine rewrite | oct 2026
+-- COINMASTER MM2 v8.0
+-- by dj | full rewrite | oct 2026
 -- ════════════════════════════════════
--- [REMOVED v7.0] safePart — невидимая платформа убрана (бесполезна при полёте под картой)
--- [FIX  v7.1] smoothTP abortFn: монета исчезла в полёте → пропуск, сразу к ближайшей
--- [FIX  v7.2] collectCoin poll: ждём пока монета не исчезнет (FTI loop + timeout)
--- [FIX  v7.3] ParkY: после монеты парим на _parkY (min_coin_Y − HideDepth), не на −50
--- [NEW  v7.4] _parkY пересчитывается каждый раунд по реальным монетам
--- [NEW  v7.5] GUI ползунки: FlySpeed (1–50 stud/s), HideDepth (0–30 stud под полом)
+-- [FIX  v8.1] HeadEdgeOffset=0: HRP центр совмещён с монетой → гарантированный Touch
+-- [FIX  v8.2] NoCollide только внутри маршрута → лобби больше не проваливается
+-- [FIX  v8.3] safeTP при старте убран → не летим под карту без монет
+-- [FIX  v8.4] _parkY держит последнее валидное значение (не сбрасывается на -50)
+-- [FIX  v8.5] GUI: якорь верхний-левый + ScrollingFrame → не уходит за экран
+-- [NEW  v8.6] Радужные цвета GUI через HSV-анимацию
 -- ════════════════════════════════════
 
 if getgenv().CM_LOADED then
-    game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title = "CoinMaster"; Text = "Уже запущен!"; Duration = 3;
+    game:GetService("StarterGui"):SetCore("SendNotification",{
+        Title="CoinMaster"; Text="Уже запущен!"; Duration=3;
     })
     return
 end
@@ -37,10 +37,10 @@ local CFG = {
     ImproveFPS     = false,
     ShowStats      = true,
     FTIAssist      = true,
-    HeadEdgeOffset = 1.5,
-    FlySpeed       = 10,         -- stud/sec, ползунок 1–50
-    HideDepth      = 6,          -- stud ниже минимальной монеты, ползунок 0–30
-    CoinPauseTime  = 0.8,        -- max poll timeout на сбор монеты (sec)
+    HeadEdgeOffset = 0,       -- v8: HRP.Y = coin.Y → центры совпадают → Touch гарантирован
+    FlySpeed       = 10,
+    HideDepth      = 6,
+    TouchWait      = 0.8,     -- max poll на сбор монеты
     CoinDelay      = 0.20,
     CoinDelayRng   = 0.25,
     NoCollide      = true,
@@ -57,22 +57,41 @@ local STATS = {
 }
 local _collectedCoins = {}
 
--- ════ PARK POSITION (v7: заменяет safePart + hideSpot) ═══
--- XZ: случайные координаты безопасной зоны
--- Y:  пересчитывается по монетам через updateParkY()
+-- ════ PARK Y (v8) ════════════════════
+-- Не сбрасывается в -50 если монет нет — держит последнее валидное значение
 local HIDE_X = math.random(-8, 8)
 local HIDE_Z = math.random(-8, 8)
-local _parkY = -50  -- fallback, обновляется updateParkY
+local _parkY = nil  -- nil = ещё не установлен
+
+local function getParkY()
+    if _parkY then return _parkY end
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    return hrp and (hrp.CFrame.Position.Y - 20) or -20
+end
 
 local function getHideSpot()
     return CFrame.new(
         HIDE_X + math.random(-4, 4) * 0.05,
-        _parkY,
+        getParkY(),
         HIDE_Z + math.random(-4, 4) * 0.05
     )
 end
 
--- ════ NO-COLLIDE (без safePart) ══════
+local function updateParkY(coinsHint)
+    local coins = coinsHint or {}
+    local minY = math.huge
+    for _, c in ipairs(coins) do
+        if c and c.Parent then
+            minY = math.min(minY, c.Position.Y)
+        end
+    end
+    if minY ~= math.huge then
+        _parkY = minY - CFG.HideDepth  -- только обновляем если есть реальные монеты
+    end
+    -- если монет нет — _parkY не меняется (держит предыдущее разумное значение)
+end
+
+-- ════ NO-COLLIDE (v8: только во время маршрута) ═══
 local noCollideConn = nil
 
 local function isCoinPart(part)
@@ -85,7 +104,7 @@ end
 local function shouldSkipPart(part)
     local char = LP.Character
     if char and part:IsDescendantOf(char) then return true end
-    if isCoinPart(part) then return true end  -- монеты сохраняют CanCollide
+    if isCoinPart(part) then return true end  -- монеты не трогаем
     return false
 end
 
@@ -128,7 +147,6 @@ local function safeTP(cf)
     end)
 end
 
--- v7: добавлен abortFn — прерывает полёт если вернул true (напр. монета исчезла)
 local function smoothTP(targetCF, speed, abortFn)
     speed = speed or CFG.FlySpeed
     local char = LP.Character
@@ -140,7 +158,7 @@ local function smoothTP(targetCF, speed, abortFn)
     local dist    = (startCF.Position - targetCF.Position).Magnitude
     if dist < 0.3 then return end
 
-    local duration = math.clamp(dist / speed, 0.2, 5.0)
+    local duration = math.clamp(dist / speed, 0.15, 5.0)
     local elapsed  = 0
 
     repeat
@@ -164,8 +182,8 @@ end
 
 local function notify(title, text, dur)
     pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = title; Text = text; Duration = dur or 3;
+        game:GetService("StarterGui"):SetCore("SendNotification",{
+            Title=title; Text=text; Duration=dur or 3;
         })
     end)
 end
@@ -246,25 +264,6 @@ local function coinMatchesType(coinPart)
     return false
 end
 
--- ════ PARK Y (v7) ════════════════════
--- _parkY = минимальная Y монеты − HideDepth
--- пересчитывается при старте раунда, respawn, и изменении ползунка
-local function updateParkY()
-    local coins = findCoins()
-    local minY = math.huge
-    for _, c in ipairs(coins) do
-        if c and c.Parent then
-            minY = math.min(minY, c.Position.Y)
-        end
-    end
-    if minY == math.huge then
-        local hrp = getHRP()
-        _parkY = hrp and (hrp.CFrame.Position.Y - CFG.HideDepth) or -50
-    else
-        _parkY = minY - CFG.HideDepth
-    end
-end
-
 -- ════ СТЕЛС ══════════════════════════
 local function isMurdererNearby(pos)
     for _, p in ipairs(Players:GetPlayers()) do
@@ -286,31 +285,37 @@ local function isMurdererNearby(pos)
     return false
 end
 
--- ════ СБОР МОНЕТЫ v7 ═════════════════
--- abortFn прерывает полёт если монета исчезла → пропуск к следующей
--- poll ждёт исчезновения монеты вместо фиксированного timeout
+-- ════ СБОР МОНЕТЫ v8 ═════════════════
+-- HeadEdgeOffset=0: HRP прямо в монете → физический Touch гарантирован
+-- Если FTI есть — шлём параллельно для надёжности
 local function collectCoin(coinPart)
     if not coinPart or not coinPart.Parent then return false end
     if not coinPart:IsDescendantOf(workspace) then return false end
 
-    local jitter = Vector3.new((math.random()-0.5)*0.5, 0, (math.random()-0.5)*0.5)
+    local jitter = Vector3.new((math.random()-0.5)*0.4, 0, (math.random()-0.5)*0.4)
+    -- v8: HeadEdgeOffset=0, HRP центр = монета центр
     local targetCF = CFrame.new(
         coinPart.Position.X + jitter.X,
         coinPart.Position.Y - CFG.HeadEdgeOffset,
         coinPart.Position.Z + jitter.Z
     )
 
-    -- Летим к монете; если она исчезла в полёте — прерываемся
     local coinGone = function() return not (coinPart and coinPart.Parent) end
     smoothTP(targetCF, nil, coinGone)
 
-    -- Монета исчезла до прилёта → пропустить, перейти к следующей
+    -- монета исчезла в полёте → пропустить
     if not coinPart.Parent then return false end
 
-    -- Poll: ждём исчезновения монеты, параллельно шлём FTI
+    -- подождать 2 физических тика для Touch event от физического пересечения
+    task.wait(0.033)
+    task.wait(0.033)
+
+    if not coinPart.Parent then return true end  -- Touch сработал
+
+    -- Poll + FTI loop (max TouchWait)
     local waited = 0
     local step   = 0.05
-    while coinPart.Parent and waited < CFG.CoinPauseTime do
+    while coinPart.Parent and waited < CFG.TouchWait do
         if HAS_FTI and CFG.FTIAssist then
             local hrp = getHRP()
             if hrp then
@@ -327,16 +332,17 @@ local function collectCoin(coinPart)
         end
     end
 
-    return true  -- прилетели и обработали (монета собрана или timeout → двигаемся дальше)
+    return true
 end
 
--- ════ МАРШРУТ GREEDY NEAREST-NEIGHBOR v7 ═════
--- Между монетами: опускаемся к _parkY (под картой), не к −50
--- Пропуск монеты: если исчезла до прилёта → немедленно берём следующую ближайшую
+-- ════ МАРШРУТ GREEDY NN v8 ═══════════
+-- NoCollide включается только здесь → лобби не проваливается
 local function runCoinRoute()
-    updateParkY()
-
     local all = findCoins()
+    if #all == 0 then return false end
+
+    updateParkY(all)  -- обновить parkY по реальным монетам
+
     local remaining = {}
     for _, c in ipairs(all) do
         if c and c.Parent and not _collectedCoins[c] and coinMatchesType(c) then
@@ -344,6 +350,9 @@ local function runCoinRoute()
         end
     end
     if #remaining == 0 then return false end
+
+    -- v8: NoCollide только во время маршрута
+    if CFG.NoCollide then enableNoCollide() end
 
     local anyCollected = false
 
@@ -353,7 +362,6 @@ local function runCoinRoute()
         local hrp = getHRP()
         if not hrp then break end
 
-        -- Ближайшая живая монета к текущей позиции HRP
         local curPos = hrp.CFrame.Position
         local bestIdx, bestDist = nil, math.huge
         for i, coin in ipairs(remaining) do
@@ -364,7 +372,6 @@ local function runCoinRoute()
         end
 
         if not bestIdx then
-            -- Все монеты в remaining исчезли — обновить и перепроверить
             local fresh = {}
             for _, c in ipairs(remaining) do
                 if c and c.Parent and not _collectedCoins[c] then
@@ -385,26 +392,24 @@ local function runCoinRoute()
         if ok then
             _collectedCoins[coin] = true
             if not coin.Parent then
-                -- монета реально исчезла (собрана)
                 STATS.CoinsThisRound += 1
                 STATS.CoinsTotal     += 1
             end
             anyCollected = true
 
-            -- v7: после монеты — опуститься к _parkY, паркуемся под картой
+            -- после монеты: опуститься к parkY (под карту)
             hrp = getHRP()
             if hrp and CFG.Enabled then
                 local curP = hrp.CFrame.Position
-                if curP.Y > _parkY + 0.5 then
-                    local parkCF = CFrame.new(curP.X, _parkY, curP.Z)
-                    smoothTP(parkCF, CFG.FlySpeed * 2.0)  -- быстро вниз
+                local py   = getParkY()
+                if curP.Y > py + 0.5 then
+                    smoothTP(CFrame.new(curP.X, py, curP.Z), CFG.FlySpeed * 2.0)
                 end
             end
         end
 
         task.wait(CFG.CoinDelay + math.random() * CFG.CoinDelayRng)
 
-        -- Чистим remaining от исчезнувших/уже собранных
         local fresh = {}
         for _, c in ipairs(remaining) do
             if c and c.Parent and not _collectedCoins[c] then
@@ -413,6 +418,9 @@ local function runCoinRoute()
         end
         remaining = fresh
     end
+
+    -- v8: выключить NoCollide после маршрута
+    if CFG.NoCollide then stopNoCollide() end
 
     return anyCollected
 end
@@ -465,12 +473,7 @@ end
 LP.CharacterAdded:Connect(function(char)
     deadThisRound = false
     hookCharacter(char)
-    if CFG.Enabled then
-        task.wait(0.3)
-        updateParkY()
-        safeTP(getHideSpot())
-        if CFG.NoCollide then task.delay(0.1, enableNoCollide) end
-    end
+    -- v8: не телепортируемся при respawn если нет монет
 end)
 if LP.Character then task.spawn(hookCharacter, LP.Character) end
 
@@ -483,6 +486,7 @@ task.spawn(function()
         local count = #coins
         if count > 0 and not farmActive then
             farmActive = true; deadThisRound = false
+            updateParkY(coins)
         elseif count == 0 and lastCount > 0 then
             farmActive = false; bagFull = false
             STATS.RoundsPlayed += 1; STATS.CoinsThisRound = 0
@@ -530,10 +534,6 @@ task.spawn(function()
             farmActive = true; deadThisRound = false; bagFull = false
             STATS.RoundsPlayed += 1; STATS.CoinsThisRound = 0
             _cachedContainer = nil; _collectedCoins = {}
-            if CFG.Enabled then
-                updateParkY()
-                safeTP(getHideSpot())
-            end
         end)
     end
 
@@ -546,7 +546,11 @@ end)
 
 task.delay(2, function()
     if not farmActive then
-        if #findCoins() > 0 then farmActive = true end
+        local coins = findCoins()
+        if #coins > 0 then
+            farmActive = true
+            updateParkY(coins)
+        end
     end
 end)
 
@@ -558,6 +562,7 @@ task.spawn(function()
             if hrp then
                 local anyCollected = runCoinRoute()
                 if anyCollected then
+                    -- вернуться на парковку под картой
                     hrp = getHRP()
                     if hrp then
                         smoothTP(getHideSpot(), CFG.FlySpeed * 0.7)
@@ -581,7 +586,7 @@ end
 for _, p in ipairs(Players:GetPlayers()) do connectImproveFPS(p) end
 Players.PlayerAdded:Connect(connectImproveFPS)
 
--- ════ GUI ════════════════════════════
+-- ════ GUI v8 ═════════════════════════
 pcall(function()
     local old = CoreGui:FindFirstChild("CoinMasterGUI")
     if old then old:Destroy() end
@@ -596,11 +601,13 @@ ScreenGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent           = (typeof(gethui) == "function" and gethui())
                            or LP.PlayerGui
 
+-- v8: фиксированная позиция верхний-левый угол, не выходит за экран
 local Main = Instance.new("Frame")
 Main.Name              = "Main"
-Main.Size              = UDim2.new(0, 265, 0, 640)
-Main.Position          = UDim2.new(0, 16, 0.5, -320)
-Main.BackgroundColor3  = Color3.fromRGB(12, 12, 16)
+Main.Size              = UDim2.new(0, 265, 0, 540)
+Main.Position          = UDim2.new(0, 10, 0, 10)
+Main.AnchorPoint       = Vector2.new(0, 0)
+Main.BackgroundColor3  = Color3.fromRGB(10, 10, 14)
 Main.BorderSizePixel   = 0
 Main.ClipsDescendants  = true
 Main.Parent            = ScreenGui
@@ -608,29 +615,27 @@ Main.Parent            = ScreenGui
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
 
 local mainStroke = Instance.new("UIStroke", Main)
-mainStroke.Color        = Color3.fromRGB(255, 210, 0)
 mainStroke.Thickness    = 1.5
-mainStroke.Transparency = 0.4
+mainStroke.Transparency = 0.15
 
 -- Header
 local Header = Instance.new("Frame", Main)
 Header.Size             = UDim2.new(1, 0, 0, 46)
-Header.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+Header.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
 Header.BorderSizePixel  = 0
 Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 12)
 
 local headerFix = Instance.new("Frame", Header)
 headerFix.Size             = UDim2.new(1, 0, 0.5, 0)
 headerFix.Position         = UDim2.new(0, 0, 0.5, 0)
-headerFix.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+headerFix.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
 headerFix.BorderSizePixel  = 0
 
 local TitleLabel = Instance.new("TextLabel", Header)
 TitleLabel.Size                   = UDim2.new(1, -46, 1, 0)
 TitleLabel.Position               = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text                   = "🪙 CoinMaster MM2 v7.0"
-TitleLabel.TextColor3             = Color3.fromRGB(255, 210, 0)
+TitleLabel.Text                   = "🪙 CoinMaster MM2 v8.0"
 TitleLabel.TextSize               = 13
 TitleLabel.Font                   = Enum.Font.GothamBold
 TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
@@ -638,7 +643,7 @@ TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
 local MinBtn = Instance.new("TextButton", Header)
 MinBtn.Size             = UDim2.new(0, 30, 0, 30)
 MinBtn.Position         = UDim2.new(1, -38, 0, 8)
-MinBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+MinBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
 MinBtn.BorderSizePixel  = 0
 MinBtn.Text             = "—"
 MinBtn.TextColor3       = Color3.fromRGB(200, 200, 215)
@@ -646,11 +651,22 @@ MinBtn.TextSize         = 14
 MinBtn.Font             = Enum.Font.GothamBold
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 
--- Content
-local Content = Instance.new("Frame", Main)
+-- v8: ScrollingFrame чтобы контент не обрезался
+local ScrollFrame = Instance.new("ScrollingFrame", Main)
+ScrollFrame.Name                  = "ScrollFrame"
+ScrollFrame.Size                  = UDim2.new(1, 0, 1, -46)
+ScrollFrame.Position              = UDim2.new(0, 0, 0, 46)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel       = 0
+ScrollFrame.ScrollBarThickness    = 3
+ScrollFrame.ScrollingDirection    = Enum.ScrollingDirection.Y
+ScrollFrame.CanvasSize            = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+
+local Content = Instance.new("Frame", ScrollFrame)
 Content.Name                   = "Content"
-Content.Size                   = UDim2.new(1, 0, 1, -46)
-Content.Position               = UDim2.new(0, 0, 0, 46)
+Content.Size                   = UDim2.new(1, -8, 0, 0)
+Content.AutomaticSize          = Enum.AutomaticSize.Y
 Content.BackgroundTransparency = 1
 
 local pad = Instance.new("UIPadding", Content)
@@ -664,24 +680,52 @@ list.Padding       = UDim.new(0, 6)
 list.SortOrder     = Enum.SortOrder.LayoutOrder
 list.FillDirection = Enum.FillDirection.Vertical
 
+-- ════ RAINBOW SYSTEM v8 ══════════════
+local _rainbowHue  = 0
+local _rainbowRefs = {}  -- {instance, property}
+
+local function registerRainbow(inst, prop)
+    table.insert(_rainbowRefs, {inst=inst, prop=prop})
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+        _rainbowHue = (_rainbowHue + 0.004) % 1
+        local col    = Color3.fromHSV(_rainbowHue, 0.85, 1)
+        local colDim = Color3.fromHSV(_rainbowHue, 0.7, 0.8)
+        for _, ref in ipairs(_rainbowRefs) do
+            pcall(function()
+                ref.inst[ref.prop] = col
+            end)
+        end
+        -- stroke и title отдельно
+        mainStroke.Color    = col
+        TitleLabel.TextColor3 = col
+    end
+end)
+
 -- ── Фабрики ──────────────────────────
-local function makeLabel(txt, col, sz, order)
+local function makeLabel(txt, sz, order, rainbow)
     local lbl = Instance.new("TextLabel", Content)
     lbl.Size                   = UDim2.new(1, 0, 0, 16)
     lbl.BackgroundTransparency = 1
     lbl.Text                   = txt
-    lbl.TextColor3             = col or Color3.fromRGB(175, 175, 195)
+    lbl.TextColor3             = Color3.fromRGB(175, 175, 195)
     lbl.TextSize               = sz or 11
     lbl.Font                   = Enum.Font.Gotham
     lbl.TextXAlignment         = Enum.TextXAlignment.Left
     lbl.LayoutOrder            = order or 0
+    if rainbow then
+        registerRainbow(lbl, "TextColor3")
+    end
     return lbl
 end
 
 local function makeDivider(order)
     local d = Instance.new("Frame", Content)
     d.Size             = UDim2.new(1, 0, 0, 1)
-    d.BackgroundColor3 = Color3.fromRGB(38, 38, 52)
+    d.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
     d.BorderSizePixel  = 0
     d.LayoutOrder      = order or 0
     return d
@@ -705,23 +749,22 @@ local function makeToggle(label, cfgKey, order, callback)
     local track = Instance.new("Frame", row)
     track.Size             = UDim2.new(0, 42, 0, 22)
     track.Position         = UDim2.new(1, -42, 0.5, -11)
-    track.BackgroundColor3 = Color3.fromRGB(38, 38, 52)
+    track.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
     track.BorderSizePixel  = 0
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local ball = Instance.new("Frame", track)
     ball.Size             = UDim2.new(0, 16, 0, 16)
     ball.Position         = UDim2.new(0, 3, 0.5, -8)
-    ball.BackgroundColor3 = Color3.fromRGB(155, 155, 170)
+    ball.BackgroundColor3 = Color3.fromRGB(130, 130, 145)
     ball.BorderSizePixel  = 0
     Instance.new("UICorner", ball).CornerRadius = UDim.new(1, 0)
 
     local function refresh()
         local on = CFG[cfgKey]
+        local col = Color3.fromHSV(_rainbowHue, 0.85, 1)
         TweenService:Create(track, TweenInfo.new(0.18), {
-            BackgroundColor3 = on
-                and Color3.fromRGB(255, 195, 0)
-                or  Color3.fromRGB(38, 38, 52)
+            BackgroundColor3 = on and col or Color3.fromRGB(35, 35, 48)
         }):Play()
         TweenService:Create(ball, TweenInfo.new(0.18), {
             Position = on
@@ -729,7 +772,7 @@ local function makeToggle(label, cfgKey, order, callback)
                 or  UDim2.new(0, 3, 0.5, -8),
             BackgroundColor3 = on
                 and Color3.fromRGB(255, 255, 255)
-                or  Color3.fromRGB(155, 155, 170)
+                or  Color3.fromRGB(130, 130, 145)
         }):Play()
     end
     refresh()
@@ -743,9 +786,21 @@ local function makeToggle(label, cfgKey, order, callback)
         refresh()
         if callback then callback(CFG[cfgKey]) end
     end)
+
+    -- rainbow следит за треком когда ON
+    task.spawn(function()
+        while true do
+            task.wait(0.05)
+            if CFG[cfgKey] then
+                pcall(function()
+                    track.BackgroundColor3 = Color3.fromHSV(_rainbowHue, 0.85, 1)
+                end)
+            end
+        end
+    end)
 end
 
--- ── v7: ползунок ─────────────────────
+-- ── Ползунок v8 ──────────────────────
 local function makeSlider(labelText, cfgKey, minVal, maxVal, step, order, onChange)
     local wrap = Instance.new("Frame", Content)
     wrap.Name                   = "Slider_" .. cfgKey
@@ -767,23 +822,23 @@ local function makeSlider(labelText, cfgKey, minVal, maxVal, step, order, onChan
     valLbl.Size                   = UDim2.new(0.32, 0, 0, 16)
     valLbl.Position               = UDim2.new(0.68, 0, 0, 0)
     valLbl.BackgroundTransparency = 1
-    valLbl.TextColor3             = Color3.fromRGB(255, 195, 0)
     valLbl.TextSize               = 12
     valLbl.Font                   = Enum.Font.GothamBold
     valLbl.TextXAlignment         = Enum.TextXAlignment.Right
+    registerRainbow(valLbl, "TextColor3")
 
     local track = Instance.new("Frame", wrap)
     track.Size             = UDim2.new(1, 0, 0, 10)
     track.Position         = UDim2.new(0, 0, 0, 22)
-    track.BackgroundColor3 = Color3.fromRGB(38, 38, 52)
+    track.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
     track.BorderSizePixel  = 0
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame", track)
     fill.Size             = UDim2.new(0, 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(255, 195, 0)
     fill.BorderSizePixel  = 0
     Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+    registerRainbow(fill, "BackgroundColor3")
 
     local thumb = Instance.new("Frame", track)
     thumb.AnchorPoint      = Vector2.new(0.5, 0.5)
@@ -875,7 +930,7 @@ local function makeCoinSelector(order)
     lbl.Font                   = Enum.Font.Gotham
     lbl.TextXAlignment         = Enum.TextXAlignment.Left
 
-    local types = {"Coin_Server", "All", "BeachBall", "Shell", "Candy"}
+    local types = {"Coin_Server","All","BeachBall","Shell","Candy"}
     local idx = 1
     for i, t in ipairs(types) do
         if t == CFG.CoinType then idx = i end
@@ -884,66 +939,79 @@ local function makeCoinSelector(order)
     local typeBtn = Instance.new("TextButton", row)
     typeBtn.Size             = UDim2.new(0.52, 0, 0, 24)
     typeBtn.Position         = UDim2.new(0.48, 0, 0.5, -12)
-    typeBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+    typeBtn.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
     typeBtn.BorderSizePixel  = 0
     typeBtn.Text             = "◀ " .. types[idx] .. " ▶"
-    typeBtn.TextColor3       = Color3.fromRGB(255, 210, 0)
     typeBtn.TextSize         = 11
     typeBtn.Font             = Enum.Font.GothamBold
     Instance.new("UICorner", typeBtn).CornerRadius = UDim.new(0, 6)
+    registerRainbow(typeBtn, "TextColor3")
 
     typeBtn.MouseButton1Click:Connect(function()
-        idx          = idx % #types + 1
+        idx = idx % #types + 1
         CFG.CoinType = types[idx]
         typeBtn.Text = "◀ " .. types[idx] .. " ▶"
     end)
 end
 
 -- ── Кнопка СТАРТ/СТОП ────────────────
-makeLabel(" ФАРМ", Color3.fromRGB(255, 210, 0), 11, 1)
+makeLabel(" ФАРМ", 11, 1, true)
 
 local startBtn = Instance.new("TextButton", Content)
 startBtn.Size             = UDim2.new(1, 0, 0, 36)
-startBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+startBtn.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
 startBtn.BorderSizePixel  = 0
 startBtn.Text             = "▶ Начать фарм"
-startBtn.TextColor3       = Color3.fromRGB(195, 195, 210)
+startBtn.TextColor3       = Color3.fromRGB(185, 185, 205)
 startBtn.TextSize         = 13
 startBtn.Font             = Enum.Font.GothamBold
 startBtn.LayoutOrder      = 2
 Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 8)
 
 local startBtnStroke = Instance.new("UIStroke", startBtn)
-startBtnStroke.Color        = Color3.fromRGB(255, 210, 0)
 startBtnStroke.Thickness    = 1
-startBtnStroke.Transparency = 0.6
+startBtnStroke.Transparency = 0.5
+
+-- rainbow для кнопки
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+        local col = Color3.fromHSV(_rainbowHue, 0.85, 1)
+        pcall(function()
+            startBtnStroke.Color = col
+            if CFG.Enabled then
+                startBtn.BackgroundColor3 = Color3.fromHSV(_rainbowHue, 0.7, 0.55)
+            end
+        end)
+    end
+end)
 
 local function refreshStartBtn()
     if CFG.Enabled then
-        TweenService:Create(startBtn, TweenInfo.new(0.2), {
-            BackgroundColor3 = Color3.fromRGB(175, 120, 0)
-        }):Play()
         startBtn.Text       = "⏹ Остановить"
         startBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
         startBtnStroke.Transparency = 0
     else
         TweenService:Create(startBtn, TweenInfo.new(0.2), {
-            BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+            BackgroundColor3 = Color3.fromRGB(22, 22, 32)
         }):Play()
         startBtn.Text       = "▶ Начать фарм"
-        startBtn.TextColor3 = Color3.fromRGB(195, 195, 210)
-        startBtnStroke.Transparency = 0.6
+        startBtn.TextColor3 = Color3.fromRGB(185, 185, 205)
+        startBtnStroke.Transparency = 0.5
     end
 end
 
 startBtn.MouseButton1Click:Connect(function()
     CFG.Enabled = not CFG.Enabled
     if CFG.Enabled then
-        bagFull    = false
-        farmActive = (#findCoins() > 0)
-        updateParkY()
-        safeTP(getHideSpot())
-        if CFG.NoCollide then enableNoCollide() end
+        bagFull = false
+        local coins = findCoins()
+        farmActive = (#coins > 0)
+        if #coins > 0 then
+            updateParkY(coins)
+            -- v8: телепортируемся только если есть монеты
+            safeTP(getHideSpot())
+        end
         local mode = (HAS_FTI and CFG.FTIAssist) and "HeadEdge + FTI" or "HeadEdge"
         notify("CoinMaster", "Фарм запущен 🪙 [" .. mode .. "]", 3)
     else
@@ -955,53 +1023,43 @@ end)
 
 -- ── Настройки ────────────────────────
 makeDivider(3)
-makeLabel(" НАСТРОЙКИ", Color3.fromRGB(255, 210, 0), 11, 4)
+makeLabel(" НАСТРОЙКИ", 11, 4, true)
 
 makeCoinSelector(5)
-
--- v7 ползунки
 makeSlider("Скорость полёта (stud/s)", "FlySpeed", 1, 50, 1, 6)
-makeSlider("Глубина под полом (stud)",  "HideDepth", 0, 30, 0.5, 7, function()
-    updateParkY()  -- пересчитать при изменении
-end)
+makeSlider("Глубина под полом (stud)",  "HideDepth", 0, 30, 0.5, 7)
 
-makeToggle("Anti-AFK",                     "AntiAFK",     8, function(v) if v then startAntiAFK() end end)
-makeToggle("Авто-сброс при полном мешке",  "AutoReset",   9)
-makeToggle("Stealth (обход убийцы)",       "StealthMode", 10)
-makeToggle("FTI Assist (FireTouch доп.)",  "FTIAssist",   11)
-makeToggle("NoCollide (фазинг сквозь карту)", "NoCollide", 12, function(v)
-    if CFG.Enabled then
-        if v then enableNoCollide() else stopNoCollide() end
-    end
-end)
-makeToggle("Improve FPS (убрать акс.)", "ImproveFPS", 13, function(v)
-    if v then improveFPS() end
-end)
+makeToggle("Anti-AFK",                        "AntiAFK",     8, function(v) if v then startAntiAFK() end end)
+makeToggle("Авто-сброс при полном мешке",     "AutoReset",   9)
+makeToggle("Stealth (обход убийцы)",          "StealthMode", 10)
+makeToggle("FTI Assist (FireTouch доп.)",     "FTIAssist",   11)
+makeToggle("NoCollide (сквозь стены карты)",  "NoCollide",   12)
+makeToggle("Improve FPS (убрать аксессуары)", "ImproveFPS",  13, function(v) if v then improveFPS() end end)
 
--- ── Статус FTI ───────────────────────
+-- FTI статус
 local ftiLabel = Instance.new("TextLabel", Content)
 ftiLabel.Size                   = UDim2.new(1, 0, 0, 14)
 ftiLabel.BackgroundTransparency = 1
 ftiLabel.Text = HAS_FTI
-    and "✓ FTI доступен → HeadEdge + FireTouch"
-    or  "✗ FTI недоступен → только HeadEdge (физич. касание)"
+    and "✓ FTI доступен → физика + FireTouch"
+    or  "✗ FTI недоступен → только физическое касание"
 ftiLabel.TextColor3 = HAS_FTI
-    and Color3.fromRGB(80, 190, 90)
-    or  Color3.fromRGB(200, 140, 50)
+    and Color3.fromRGB(70, 180, 80)
+    or  Color3.fromRGB(190, 130, 40)
 ftiLabel.TextSize       = 10
 ftiLabel.Font           = Enum.Font.Gotham
 ftiLabel.TextXAlignment = Enum.TextXAlignment.Left
 ftiLabel.LayoutOrder    = 14
 
--- ── Статистика ────────────────────────
+-- Статистика
 makeDivider(15)
-makeLabel(" СТАТИСТИКА", Color3.fromRGB(255, 210, 0), 11, 16)
+makeLabel(" СТАТИСТИКА", 11, 16, true)
 
 local statLabel = Instance.new("TextLabel", Content)
 statLabel.Size                   = UDim2.new(1, 0, 0, 90)
 statLabel.BackgroundTransparency = 1
 statLabel.Text                   = "Ожидание раунда..."
-statLabel.TextColor3             = Color3.fromRGB(155, 155, 175)
+statLabel.TextColor3             = Color3.fromRGB(145, 145, 165)
 statLabel.TextSize               = 11
 statLabel.Font                   = Enum.Font.Gotham
 statLabel.TextXAlignment         = Enum.TextXAlignment.Left
@@ -1042,12 +1100,12 @@ MinBtn.MouseButton1Click:Connect(function()
     TweenService:Create(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {
         Size = minimized
             and UDim2.new(0, 265, 0, 46)
-            or  UDim2.new(0, 265, 0, 640)
+            or  UDim2.new(0, 265, 0, 540)
     }):Play()
     MinBtn.Text = minimized and "+" or "—"
 end)
 
--- ════ ОБНОВЛЕНИЕ СТАТИСТИКИ ══════════
+-- ════ СТАТИСТИКА АПДЕЙТ ══════════════
 task.spawn(function()
     while true do
         task.wait(1)
@@ -1069,18 +1127,16 @@ task.spawn(function()
             elseif farmActive then
                 status = "🟢 Фарм [" .. mode .. "] (" .. coinCount .. " монет)"
             else
-                status = "🟡 Ждём раунд"
+                status = "🟡 Ждём раунд..."
             end
 
             statLabel.Text = string.format(
                 "%s\nРаунд: %d | Всего: %d\nСессия: %02d:%02d | ~%d/мин\nРаундов: %d | Park Y: %.1f",
                 status,
-                STATS.CoinsThisRound,
-                STATS.CoinsTotal,
-                mins, secs,
-                rate,
+                STATS.CoinsThisRound, STATS.CoinsTotal,
+                mins, secs, rate,
                 STATS.RoundsPlayed,
-                _parkY
+                getParkY()
             )
         end
     end
@@ -1090,6 +1146,6 @@ end)
 if CFG.AntiAFK then startAntiAFK() end
 
 local initMsg = HAS_FTI
-    and "v7.0 ✓ HeadEdge+FTI | ParkY | без SafePart"
-    or  "v7.0 ✓ HeadEdge | ParkY | без SafePart"
+    and "v8.0 ✓ HeadEdge+FTI | rainbow | fixed"
+    or  "v8.0 ✓ HeadEdge | rainbow | fixed"
 notify("CoinMaster", initMsg, 4)
