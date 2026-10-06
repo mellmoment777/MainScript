@@ -1,5 +1,5 @@
 -- ════════════════════════════════════
--- COINMASTER MM2 v8.8
+-- COINMASTER MM2 v8.9
 -- by dj | full rewrite | oct 2026
 -- ════════════════════════════════════
 -- [FIX v8.1] HeadEdgeOffset=0
@@ -10,6 +10,11 @@
 -- [NEW v8.6] Радужные цвета GUI
 -- [FIX v8.7] Убрано падение между монетами (coin→coin без дипа)
 -- [FIX v8.8] NoCollide скоупирован только на карту раунда
+-- [FIX v8.9] hide только когда монет нет / bagFull
+--            AssemblyLinearVelocity вместо Velocity
+--            FTI по всем частям тела
+--            FlySpeed default 50
+--            jitter убран (точный наезд на монету)
 -- ════════════════════════════════════
 
 if getgenv().CM_LOADED then
@@ -40,7 +45,7 @@ local CFG = {
     ShowStats      = true,
     FTIAssist      = true,
     HeadEdgeOffset = 0,
-    FlySpeed       = 10,
+    FlySpeed       = 50,   -- [FIX v8.9] было 10
     HideDepth      = 6,
     TouchWait      = 0.8,
     CoinDelay      = 0.20,
@@ -92,11 +97,9 @@ local function updateParkY(coinsHint)
 end
 
 -- ════ CONTAINER CACHE ════════════════
--- [v8.8] объявляется ДО no-collide чтобы enableNoCollide видел переменную
 local _cachedContainer = nil
 
 -- ════ NO-COLLIDE ═════════════════════
--- [v8.8] скоупирован только на модель карты раунда, лобби не трогает
 local noCollideConn = nil
 
 local function isCoinPart(part)
@@ -118,20 +121,17 @@ local function applyNoCollide(part)
     pcall(function() part.CanCollide = false end)
 end
 
--- [v8.8] возвращает Model в workspace который является картой раунда
 local function getRoundMapModel()
     if not _cachedContainer or not _cachedContainer.Parent then return nil end
     local p = _cachedContainer.Parent
-    -- CoinContainer → родитель → он же в workspace = карта раунда
     if p and p ~= workspace and p.Parent == workspace then return p end
-    -- CoinContainer лежит прямо в workspace, поднимаемся выше нет смысла
     return nil
 end
 
 local function enableNoCollide()
     if noCollideConn then return end
     local roundMap = getRoundMapModel()
-    if not roundMap then return end  -- карта не найдена → пропустить
+    if not roundMap then return end
     for _, v in ipairs(roundMap:GetDescendants()) do
         if v:IsA("BasePart") then applyNoCollide(v) end
     end
@@ -164,6 +164,7 @@ local function safeTP(cf)
     end)
 end
 
+-- [FIX v8.9] AssemblyLinearVelocity вместо Velocity
 local function smoothTP(targetCF, speed, abortFn)
     speed = speed or CFG.FlySpeed
     local char = LP.Character
@@ -186,8 +187,8 @@ local function smoothTP(targetCF, speed, abortFn)
         local a = t * t * (3 - 2 * t)
         pcall(function()
             if hrp and hrp.Parent then
-                hrp.CFrame   = startCF:Lerp(targetCF, a)
-                hrp.Velocity = Vector3.zero
+                hrp.CFrame = startCF:Lerp(targetCF, a)
+                hrp.AssemblyLinearVelocity = Vector3.zero  -- [FIX v8.9]
             end
         end)
     until elapsed >= duration or not CFG.Enabled
@@ -206,7 +207,6 @@ local function notify(title, text, dur)
 end
 
 -- ════ ПОИСК КОНТЕЙНЕРА ═══════════════
--- _cachedContainer уже объявлен выше
 local function findContainer()
     if _cachedContainer and _cachedContainer.Parent then return _cachedContainer end
     _cachedContainer = nil
@@ -303,15 +303,16 @@ local function isMurdererNearby(pos)
 end
 
 -- ════ СБОР МОНЕТЫ ════════════════════
+-- [FIX v8.9] jitter убран, FTI по всем частям тела
 local function collectCoin(coinPart)
     if not coinPart or not coinPart.Parent then return false end
     if not coinPart:IsDescendantOf(workspace) then return false end
 
-    local jitter = Vector3.new((math.random()-0.5)*0.4, 0, (math.random()-0.5)*0.4)
+    -- [FIX v8.9] без jitter — точный наезд
     local targetCF = CFrame.new(
-        coinPart.Position.X + jitter.X,
+        coinPart.Position.X,
         coinPart.Position.Y - CFG.HeadEdgeOffset,
-        coinPart.Position.Z + jitter.Z
+        coinPart.Position.Z
     )
 
     local coinGone = function() return not (coinPart and coinPart.Parent) end
@@ -319,26 +320,34 @@ local function collectCoin(coinPart)
 
     if not coinPart.Parent then return false end
 
-    task.wait(0.033)
-    task.wait(0.033)
+    task.wait(0.05)
 
     if not coinPart.Parent then return true end
 
+    -- [FIX v8.9] FTI по всем BasePart персонажа, не только HRP
     local waited = 0
     local step   = 0.05
     while coinPart.Parent and waited < CFG.TouchWait do
         if HAS_FTI and CFG.FTIAssist then
-            local hrp = getHRP()
-            if hrp then
-                pcall(function() firetouchinterest(coinPart, hrp, 0) end)
+            local char = LP.Character
+            if char then
+                for _, part in ipairs(char:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        pcall(function() firetouchinterest(coinPart, part, 0) end)
+                    end
+                end
             end
         end
         task.wait(step)
         waited = waited + step
         if HAS_FTI and CFG.FTIAssist and coinPart.Parent then
-            local hrp = getHRP()
-            if hrp then
-                pcall(function() firetouchinterest(coinPart, hrp, 1) end)
+            local char = LP.Character
+            if char then
+                for _, part in ipairs(char:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        pcall(function() firetouchinterest(coinPart, part, 1) end)
+                    end
+                end
             end
         end
     end
@@ -347,9 +356,6 @@ local function collectCoin(coinPart)
 end
 
 -- ════ МАРШРУТ GREEDY NN ══════════════
--- [v8.7] после каждой монеты НЕТ падения к parkY
---        персонаж идёт прямо к следующей монете
---        парковка только после завершения всего маршрута
 local function runCoinRoute()
     local all = findCoins()
     if #all == 0 then return false end
@@ -364,7 +370,6 @@ local function runCoinRoute()
     end
     if #remaining == 0 then return false end
 
-    -- [v8.8] NoCollide теперь применяется только к модели карты раунда
     if CFG.NoCollide then enableNoCollide() end
 
     local anyCollected = false
@@ -409,8 +414,6 @@ local function runCoinRoute()
                 STATS.CoinsTotal     += 1
             end
             anyCollected = true
-            -- [v8.7] убрано: падение к parkY после каждой монеты
-            -- летим прямо к следующей без дипа
         end
 
         task.wait(CFG.CoinDelay + math.random() * CFG.CoinDelayRng)
@@ -424,7 +427,6 @@ local function runCoinRoute()
         remaining = fresh
     end
 
-    -- NoCollide выключается после маршрута (было и раньше)
     if CFG.NoCollide then stopNoCollide() end
 
     return anyCollected
@@ -559,6 +561,7 @@ task.delay(2, function()
 end)
 
 -- ════ ОСНОВНОЙ ЦИКЛ ══════════════════
+-- [FIX v8.9] hide только когда anyCollected=false (монет больше нет)
 task.spawn(function()
     while true do
         if CFG.Enabled and farmActive and not bagFull and not deadThisRound then
@@ -566,12 +569,14 @@ task.spawn(function()
             if hrp then
                 local anyCollected = runCoinRoute()
                 if anyCollected then
-                    -- парковка под картой только по завершении всего маршрута
+                    -- монеты ещё были → не уходим в hide, сразу следующая итерация
+                    -- (убрано: smoothTP(getHideSpot()) после каждого маршрута)
+                else
+                    -- монет нет → паркуемся под картой и ждём раунд
                     hrp = getHRP()
                     if hrp then
                         smoothTP(getHideSpot(), CFG.FlySpeed * 0.7)
                     end
-                else
                     farmActive = false
                 end
             end
@@ -590,7 +595,7 @@ end
 for _, p in ipairs(Players:GetPlayers()) do connectImproveFPS(p) end
 Players.PlayerAdded:Connect(connectImproveFPS)
 
--- ════ GUI v8 ═════════════════════════
+-- ════ GUI v8.9 ════════════════════════
 pcall(function()
     local old = CoreGui:FindFirstChild("CoinMasterGUI")
     if old then old:Destroy() end
@@ -637,7 +642,7 @@ local TitleLabel = Instance.new("TextLabel", Header)
 TitleLabel.Size                   = UDim2.new(1, -46, 1, 0)
 TitleLabel.Position               = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text                   = "🪙 CoinMaster MM2 v8.8"
+TitleLabel.Text                   = "🪙 CoinMaster MM2 v8.9"
 TitleLabel.TextSize               = 13
 TitleLabel.Font                   = Enum.Font.GothamBold
 TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
@@ -1014,7 +1019,7 @@ makeDivider(3)
 makeLabel(" НАСТРОЙКИ", 11, 4, true)
 
 makeCoinSelector(5)
-makeSlider("Скорость полёта (stud/s)", "FlySpeed",   1,  50, 1,   6)
+makeSlider("Скорость полёта (stud/s)", "FlySpeed",   1,  100, 1,   6)
 makeSlider("Глубина под полом (stud)",  "HideDepth",  0,  30, 0.5, 7)
 
 makeToggle("Anti-AFK",                        "AntiAFK",     8,  function(v) if v then startAntiAFK() end end)
@@ -1132,6 +1137,6 @@ end)
 if CFG.AntiAFK then startAntiAFK() end
 
 local initMsg = HAS_FTI
-    and "v8.8 ✓ HeadEdge+FTI | coin→coin | map-scoped nocollide"
-    or  "v8.8 ✓ HeadEdge | coin→coin | map-scoped nocollide"
+    and "v8.9 ✓ HeadEdge+FTI | no-hide-loop | AssemblyVelocity"
+    or  "v8.9 ✓ HeadEdge | no-hide-loop | AssemblyVelocity"
 notify("CoinMaster", initMsg, 4)
