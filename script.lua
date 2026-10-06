@@ -1,13 +1,15 @@
 -- ════════════════════════════════════
--- COINMASTER MM2 v8.0
+-- COINMASTER MM2 v8.8
 -- by dj | full rewrite | oct 2026
 -- ════════════════════════════════════
--- [FIX  v8.1] HeadEdgeOffset=0: HRP центр совмещён с монетой → гарантированный Touch
--- [FIX  v8.2] NoCollide только внутри маршрута → лобби больше не проваливается
--- [FIX  v8.3] safeTP при старте убран → не летим под карту без монет
--- [FIX  v8.4] _parkY держит последнее валидное значение (не сбрасывается на -50)
--- [FIX  v8.5] GUI: якорь верхний-левый + ScrollingFrame → не уходит за экран
--- [NEW  v8.6] Радужные цвета GUI через HSV-анимацию
+-- [FIX v8.1] HeadEdgeOffset=0
+-- [FIX v8.2] NoCollide только во время маршрута
+-- [FIX v8.3] safeTP при старте убран
+-- [FIX v8.4] _parkY не сбрасывается
+-- [FIX v8.5] GUI якорь верхний-левый
+-- [NEW v8.6] Радужные цвета GUI
+-- [FIX v8.7] Убрано падение между монетами (coin→coin без дипа)
+-- [FIX v8.8] NoCollide скоупирован только на карту раунда
 -- ════════════════════════════════════
 
 if getgenv().CM_LOADED then
@@ -37,10 +39,10 @@ local CFG = {
     ImproveFPS     = false,
     ShowStats      = true,
     FTIAssist      = true,
-    HeadEdgeOffset = 0,       -- v8: HRP.Y = coin.Y → центры совпадают → Touch гарантирован
+    HeadEdgeOffset = 0,
     FlySpeed       = 10,
     HideDepth      = 6,
-    TouchWait      = 0.8,     -- max poll на сбор монеты
+    TouchWait      = 0.8,
     CoinDelay      = 0.20,
     CoinDelayRng   = 0.25,
     NoCollide      = true,
@@ -57,11 +59,10 @@ local STATS = {
 }
 local _collectedCoins = {}
 
--- ════ PARK Y (v8) ════════════════════
--- Не сбрасывается в -50 если монет нет — держит последнее валидное значение
+-- ════ PARK Y ═════════════════════════
 local HIDE_X = math.random(-8, 8)
 local HIDE_Z = math.random(-8, 8)
-local _parkY = nil  -- nil = ещё не установлен
+local _parkY = nil
 
 local function getParkY()
     if _parkY then return _parkY end
@@ -86,12 +87,16 @@ local function updateParkY(coinsHint)
         end
     end
     if minY ~= math.huge then
-        _parkY = minY - CFG.HideDepth  -- только обновляем если есть реальные монеты
+        _parkY = minY - CFG.HideDepth
     end
-    -- если монет нет — _parkY не меняется (держит предыдущее разумное значение)
 end
 
--- ════ NO-COLLIDE (v8: только во время маршрута) ═══
+-- ════ CONTAINER CACHE ════════════════
+-- [v8.8] объявляется ДО no-collide чтобы enableNoCollide видел переменную
+local _cachedContainer = nil
+
+-- ════ NO-COLLIDE ═════════════════════
+-- [v8.8] скоупирован только на модель карты раунда, лобби не трогает
 local noCollideConn = nil
 
 local function isCoinPart(part)
@@ -104,7 +109,7 @@ end
 local function shouldSkipPart(part)
     local char = LP.Character
     if char and part:IsDescendantOf(char) then return true end
-    if isCoinPart(part) then return true end  -- монеты не трогаем
+    if isCoinPart(part) then return true end
     return false
 end
 
@@ -113,12 +118,24 @@ local function applyNoCollide(part)
     pcall(function() part.CanCollide = false end)
 end
 
+-- [v8.8] возвращает Model в workspace который является картой раунда
+local function getRoundMapModel()
+    if not _cachedContainer or not _cachedContainer.Parent then return nil end
+    local p = _cachedContainer.Parent
+    -- CoinContainer → родитель → он же в workspace = карта раунда
+    if p and p ~= workspace and p.Parent == workspace then return p end
+    -- CoinContainer лежит прямо в workspace, поднимаемся выше нет смысла
+    return nil
+end
+
 local function enableNoCollide()
     if noCollideConn then return end
-    for _, v in ipairs(workspace:GetDescendants()) do
+    local roundMap = getRoundMapModel()
+    if not roundMap then return end  -- карта не найдена → пропустить
+    for _, v in ipairs(roundMap:GetDescendants()) do
         if v:IsA("BasePart") then applyNoCollide(v) end
     end
-    noCollideConn = workspace.DescendantAdded:Connect(function(obj)
+    noCollideConn = roundMap.DescendantAdded:Connect(function(obj)
         if obj:IsA("BasePart") then
             task.defer(function()
                 if obj and obj.Parent then applyNoCollide(obj) end
@@ -189,7 +206,7 @@ local function notify(title, text, dur)
 end
 
 -- ════ ПОИСК КОНТЕЙНЕРА ═══════════════
-local _cachedContainer = nil
+-- _cachedContainer уже объявлен выше
 local function findContainer()
     if _cachedContainer and _cachedContainer.Parent then return _cachedContainer end
     _cachedContainer = nil
@@ -285,15 +302,12 @@ local function isMurdererNearby(pos)
     return false
 end
 
--- ════ СБОР МОНЕТЫ v8 ═════════════════
--- HeadEdgeOffset=0: HRP прямо в монете → физический Touch гарантирован
--- Если FTI есть — шлём параллельно для надёжности
+-- ════ СБОР МОНЕТЫ ════════════════════
 local function collectCoin(coinPart)
     if not coinPart or not coinPart.Parent then return false end
     if not coinPart:IsDescendantOf(workspace) then return false end
 
     local jitter = Vector3.new((math.random()-0.5)*0.4, 0, (math.random()-0.5)*0.4)
-    -- v8: HeadEdgeOffset=0, HRP центр = монета центр
     local targetCF = CFrame.new(
         coinPart.Position.X + jitter.X,
         coinPart.Position.Y - CFG.HeadEdgeOffset,
@@ -303,16 +317,13 @@ local function collectCoin(coinPart)
     local coinGone = function() return not (coinPart and coinPart.Parent) end
     smoothTP(targetCF, nil, coinGone)
 
-    -- монета исчезла в полёте → пропустить
     if not coinPart.Parent then return false end
 
-    -- подождать 2 физических тика для Touch event от физического пересечения
     task.wait(0.033)
     task.wait(0.033)
 
-    if not coinPart.Parent then return true end  -- Touch сработал
+    if not coinPart.Parent then return true end
 
-    -- Poll + FTI loop (max TouchWait)
     local waited = 0
     local step   = 0.05
     while coinPart.Parent and waited < CFG.TouchWait do
@@ -335,13 +346,15 @@ local function collectCoin(coinPart)
     return true
 end
 
--- ════ МАРШРУТ GREEDY NN v8 ═══════════
--- NoCollide включается только здесь → лобби не проваливается
+-- ════ МАРШРУТ GREEDY NN ══════════════
+-- [v8.7] после каждой монеты НЕТ падения к parkY
+--        персонаж идёт прямо к следующей монете
+--        парковка только после завершения всего маршрута
 local function runCoinRoute()
     local all = findCoins()
     if #all == 0 then return false end
 
-    updateParkY(all)  -- обновить parkY по реальным монетам
+    updateParkY(all)
 
     local remaining = {}
     for _, c in ipairs(all) do
@@ -351,7 +364,7 @@ local function runCoinRoute()
     end
     if #remaining == 0 then return false end
 
-    -- v8: NoCollide только во время маршрута
+    -- [v8.8] NoCollide теперь применяется только к модели карты раунда
     if CFG.NoCollide then enableNoCollide() end
 
     local anyCollected = false
@@ -396,16 +409,8 @@ local function runCoinRoute()
                 STATS.CoinsTotal     += 1
             end
             anyCollected = true
-
-            -- после монеты: опуститься к parkY (под карту)
-            hrp = getHRP()
-            if hrp and CFG.Enabled then
-                local curP = hrp.CFrame.Position
-                local py   = getParkY()
-                if curP.Y > py + 0.5 then
-                    smoothTP(CFrame.new(curP.X, py, curP.Z), CFG.FlySpeed * 2.0)
-                end
-            end
+            -- [v8.7] убрано: падение к parkY после каждой монеты
+            -- летим прямо к следующей без дипа
         end
 
         task.wait(CFG.CoinDelay + math.random() * CFG.CoinDelayRng)
@@ -419,7 +424,7 @@ local function runCoinRoute()
         remaining = fresh
     end
 
-    -- v8: выключить NoCollide после маршрута
+    -- NoCollide выключается после маршрута (было и раньше)
     if CFG.NoCollide then stopNoCollide() end
 
     return anyCollected
@@ -473,7 +478,6 @@ end
 LP.CharacterAdded:Connect(function(char)
     deadThisRound = false
     hookCharacter(char)
-    -- v8: не телепортируемся при respawn если нет монет
 end)
 if LP.Character then task.spawn(hookCharacter, LP.Character) end
 
@@ -562,7 +566,7 @@ task.spawn(function()
             if hrp then
                 local anyCollected = runCoinRoute()
                 if anyCollected then
-                    -- вернуться на парковку под картой
+                    -- парковка под картой только по завершении всего маршрута
                     hrp = getHRP()
                     if hrp then
                         smoothTP(getHideSpot(), CFG.FlySpeed * 0.7)
@@ -601,7 +605,6 @@ ScreenGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent           = (typeof(gethui) == "function" and gethui())
                            or LP.PlayerGui
 
--- v8: фиксированная позиция верхний-левый угол, не выходит за экран
 local Main = Instance.new("Frame")
 Main.Name              = "Main"
 Main.Size              = UDim2.new(0, 265, 0, 540)
@@ -618,7 +621,6 @@ local mainStroke = Instance.new("UIStroke", Main)
 mainStroke.Thickness    = 1.5
 mainStroke.Transparency = 0.15
 
--- Header
 local Header = Instance.new("Frame", Main)
 Header.Size             = UDim2.new(1, 0, 0, 46)
 Header.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
@@ -635,7 +637,7 @@ local TitleLabel = Instance.new("TextLabel", Header)
 TitleLabel.Size                   = UDim2.new(1, -46, 1, 0)
 TitleLabel.Position               = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text                   = "🪙 CoinMaster MM2 v8.0"
+TitleLabel.Text                   = "🪙 CoinMaster MM2 v8.8"
 TitleLabel.TextSize               = 13
 TitleLabel.Font                   = Enum.Font.GothamBold
 TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
@@ -651,17 +653,16 @@ MinBtn.TextSize         = 14
 MinBtn.Font             = Enum.Font.GothamBold
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 
--- v8: ScrollingFrame чтобы контент не обрезался
 local ScrollFrame = Instance.new("ScrollingFrame", Main)
-ScrollFrame.Name                  = "ScrollFrame"
-ScrollFrame.Size                  = UDim2.new(1, 0, 1, -46)
-ScrollFrame.Position              = UDim2.new(0, 0, 0, 46)
+ScrollFrame.Name                   = "ScrollFrame"
+ScrollFrame.Size                   = UDim2.new(1, 0, 1, -46)
+ScrollFrame.Position               = UDim2.new(0, 0, 0, 46)
 ScrollFrame.BackgroundTransparency = 1
-ScrollFrame.BorderSizePixel       = 0
-ScrollFrame.ScrollBarThickness    = 3
-ScrollFrame.ScrollingDirection    = Enum.ScrollingDirection.Y
-ScrollFrame.CanvasSize            = UDim2.new(0, 0, 0, 0)
-ScrollFrame.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+ScrollFrame.BorderSizePixel        = 0
+ScrollFrame.ScrollBarThickness     = 3
+ScrollFrame.ScrollingDirection     = Enum.ScrollingDirection.Y
+ScrollFrame.CanvasSize             = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize    = Enum.AutomaticSize.Y
 
 local Content = Instance.new("Frame", ScrollFrame)
 Content.Name                   = "Content"
@@ -680,9 +681,9 @@ list.Padding       = UDim.new(0, 6)
 list.SortOrder     = Enum.SortOrder.LayoutOrder
 list.FillDirection = Enum.FillDirection.Vertical
 
--- ════ RAINBOW SYSTEM v8 ══════════════
+-- ════ RAINBOW ════════════════════════
 local _rainbowHue  = 0
-local _rainbowRefs = {}  -- {instance, property}
+local _rainbowRefs = {}
 
 local function registerRainbow(inst, prop)
     table.insert(_rainbowRefs, {inst=inst, prop=prop})
@@ -692,15 +693,11 @@ task.spawn(function()
     while true do
         task.wait(0.05)
         _rainbowHue = (_rainbowHue + 0.004) % 1
-        local col    = Color3.fromHSV(_rainbowHue, 0.85, 1)
-        local colDim = Color3.fromHSV(_rainbowHue, 0.7, 0.8)
+        local col = Color3.fromHSV(_rainbowHue, 0.85, 1)
         for _, ref in ipairs(_rainbowRefs) do
-            pcall(function()
-                ref.inst[ref.prop] = col
-            end)
+            pcall(function() ref.inst[ref.prop] = col end)
         end
-        -- stroke и title отдельно
-        mainStroke.Color    = col
+        mainStroke.Color      = col
         TitleLabel.TextColor3 = col
     end
 end)
@@ -716,9 +713,7 @@ local function makeLabel(txt, sz, order, rainbow)
     lbl.Font                   = Enum.Font.Gotham
     lbl.TextXAlignment         = Enum.TextXAlignment.Left
     lbl.LayoutOrder            = order or 0
-    if rainbow then
-        registerRainbow(lbl, "TextColor3")
-    end
+    if rainbow then registerRainbow(lbl, "TextColor3") end
     return lbl
 end
 
@@ -761,15 +756,13 @@ local function makeToggle(label, cfgKey, order, callback)
     Instance.new("UICorner", ball).CornerRadius = UDim.new(1, 0)
 
     local function refresh()
-        local on = CFG[cfgKey]
+        local on  = CFG[cfgKey]
         local col = Color3.fromHSV(_rainbowHue, 0.85, 1)
         TweenService:Create(track, TweenInfo.new(0.18), {
             BackgroundColor3 = on and col or Color3.fromRGB(35, 35, 48)
         }):Play()
         TweenService:Create(ball, TweenInfo.new(0.18), {
-            Position = on
-                and UDim2.new(0, 23, 0.5, -8)
-                or  UDim2.new(0, 3, 0.5, -8),
+            Position = on and UDim2.new(0, 23, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
             BackgroundColor3 = on
                 and Color3.fromRGB(255, 255, 255)
                 or  Color3.fromRGB(130, 130, 145)
@@ -787,7 +780,6 @@ local function makeToggle(label, cfgKey, order, callback)
         if callback then callback(CFG[cfgKey]) end
     end)
 
-    -- rainbow следит за треком когда ON
     task.spawn(function()
         while true do
             task.wait(0.05)
@@ -800,7 +792,6 @@ local function makeToggle(label, cfgKey, order, callback)
     end)
 end
 
--- ── Ползунок v8 ──────────────────────
 local function makeSlider(labelText, cfgKey, minVal, maxVal, step, order, onChange)
     local wrap = Instance.new("Frame", Content)
     wrap.Name                   = "Slider_" .. cfgKey
@@ -914,7 +905,6 @@ local function makeSlider(labelText, cfgKey, minVal, maxVal, step, order, onChan
     end)
 end
 
--- ── Тип монеты ───────────────────────
 local function makeCoinSelector(order)
     local row = Instance.new("Frame", Content)
     row.Size                   = UDim2.new(1, 0, 0, 30)
@@ -972,7 +962,6 @@ local startBtnStroke = Instance.new("UIStroke", startBtn)
 startBtnStroke.Thickness    = 1
 startBtnStroke.Transparency = 0.5
 
--- rainbow для кнопки
 task.spawn(function()
     while true do
         task.wait(0.05)
@@ -1009,7 +998,6 @@ startBtn.MouseButton1Click:Connect(function()
         farmActive = (#coins > 0)
         if #coins > 0 then
             updateParkY(coins)
-            -- v8: телепортируемся только если есть монеты
             safeTP(getHideSpot())
         end
         local mode = (HAS_FTI and CFG.FTIAssist) and "HeadEdge + FTI" or "HeadEdge"
@@ -1026,17 +1014,16 @@ makeDivider(3)
 makeLabel(" НАСТРОЙКИ", 11, 4, true)
 
 makeCoinSelector(5)
-makeSlider("Скорость полёта (stud/s)", "FlySpeed", 1, 50, 1, 6)
-makeSlider("Глубина под полом (stud)",  "HideDepth", 0, 30, 0.5, 7)
+makeSlider("Скорость полёта (stud/s)", "FlySpeed",   1,  50, 1,   6)
+makeSlider("Глубина под полом (stud)",  "HideDepth",  0,  30, 0.5, 7)
 
-makeToggle("Anti-AFK",                        "AntiAFK",     8, function(v) if v then startAntiAFK() end end)
+makeToggle("Anti-AFK",                        "AntiAFK",     8,  function(v) if v then startAntiAFK() end end)
 makeToggle("Авто-сброс при полном мешке",     "AutoReset",   9)
 makeToggle("Stealth (обход убийцы)",          "StealthMode", 10)
 makeToggle("FTI Assist (FireTouch доп.)",     "FTIAssist",   11)
 makeToggle("NoCollide (сквозь стены карты)",  "NoCollide",   12)
 makeToggle("Improve FPS (убрать аксессуары)", "ImproveFPS",  13, function(v) if v then improveFPS() end end)
 
--- FTI статус
 local ftiLabel = Instance.new("TextLabel", Content)
 ftiLabel.Size                   = UDim2.new(1, 0, 0, 14)
 ftiLabel.BackgroundTransparency = 1
@@ -1051,7 +1038,6 @@ ftiLabel.Font           = Enum.Font.Gotham
 ftiLabel.TextXAlignment = Enum.TextXAlignment.Left
 ftiLabel.LayoutOrder    = 14
 
--- Статистика
 makeDivider(15)
 makeLabel(" СТАТИСТИКА", 11, 16, true)
 
@@ -1146,6 +1132,6 @@ end)
 if CFG.AntiAFK then startAntiAFK() end
 
 local initMsg = HAS_FTI
-    and "v8.0 ✓ HeadEdge+FTI | rainbow | fixed"
-    or  "v8.0 ✓ HeadEdge | rainbow | fixed"
+    and "v8.8 ✓ HeadEdge+FTI | coin→coin | map-scoped nocollide"
+    or  "v8.8 ✓ HeadEdge | coin→coin | map-scoped nocollide"
 notify("CoinMaster", initMsg, 4)
