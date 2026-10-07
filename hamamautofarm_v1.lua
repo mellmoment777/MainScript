@@ -23,7 +23,6 @@ local tweenSpeed         = 1.2
 local tweenSmoothnessVal = 0.25
 local speedDragging      = false
 local smoothDragging     = false
-local holdCFrame         = nil
 
 local easingStyles = {
     Enum.EasingStyle.Linear,
@@ -62,6 +61,12 @@ local function restoreMapCollision()
         end
     end
     savedCanCollide = {}
+end
+
+local function unanchorHRP()
+    local ch = LocalPlayer.Character
+    local h  = ch and ch:FindFirstChild("HumanoidRootPart")
+    if h then h.Anchored = false end
 end
 
 local old = PlayerGui:FindFirstChild("AzureMM2UI")
@@ -517,12 +522,12 @@ farmToggle.MouseButton1Click:Connect(function()
     setToggle(farmToggle, farmKnob, autoFarm)
     if not autoFarm then
         farmingActive = false
-        holdCFrame    = nil
         if currentTween then
             currentTween:Cancel()
             currentTween = nil
         end
         currentTarget = nil
+        unanchorHRP()
         restoreMapCollision()
     elseif farmingActive then
         task.spawn(disableMapCollision)
@@ -573,11 +578,11 @@ RoundStart.OnClientEvent:Connect(function()
         if not startCFrame then
             startCFrame = hrp.CFrame
         end
+        hrp.Anchored = false
     end
     farmingActive = true
     bagFull       = false
     resetting     = false
-    holdCFrame    = nil
     if currentTween then
         currentTween:Cancel()
         currentTween = nil
@@ -592,12 +597,12 @@ end)
 
 RoundEndFade.OnClientEvent:Connect(function()
     farmingActive = false
-    holdCFrame    = nil
     if currentTween then
         currentTween:Cancel()
         currentTween = nil
     end
     currentTarget = nil
+    unanchorHRP()
     task.spawn(restoreMapCollision)
 end)
 
@@ -605,12 +610,12 @@ task.spawn(function()
     while true do
         task.wait(0.18)
         if not (autoFarm and farmingActive and not resetting) then
-            holdCFrame = nil
             if currentTween then
                 currentTween:Cancel()
                 currentTween = nil
             end
             currentTarget = nil
+            unanchorHRP()
             continue
         end
         local character = LocalPlayer.Character
@@ -647,14 +652,14 @@ task.spawn(function()
             currentTarget      = bestCoin
             currentTargetStart = os.clock()
             local ti = TweenInfo.new(tweenSpeed, getEasingStyle(), Enum.EasingDirection.Out)
-            holdCFrame   = nil
+            hrp.Anchored = false
             currentTween = TweenService:Create(hrp, ti, { CFrame = bestCoin.CFrame })
             currentTween.Completed:Connect(function()
                 currentTween = nil
-                if autoFarm and farmingActive and not resetting then
-                    local ch = LocalPlayer.Character
-                    local h  = ch and ch:FindFirstChild("HumanoidRootPart")
-                    if h then holdCFrame = h.CFrame end
+                local ch = LocalPlayer.Character
+                local h  = ch and ch:FindFirstChild("HumanoidRootPart")
+                if h and autoFarm and farmingActive and not resetting then
+                    h.Anchored = true
                 end
             end)
             currentTween:Play()
@@ -663,23 +668,8 @@ task.spawn(function()
 end)
 
 RunService.Heartbeat:Connect(function()
-    if not (autoFarm and farmingActive and not resetting) then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    if holdCFrame and not currentTween then
-        hrp.CFrame = holdCFrame
-    end
-    if not currentTarget or not currentTarget.Parent then
+    if not currentTarget then return end
+    if not currentTarget.Parent or not currentTarget:FindFirstChild("TouchInterest") then
         currentTarget = nil
-        return
-    end
-    if not currentTarget:FindFirstChild("TouchInterest") then
-        currentTarget = nil
-        return
-    end
-    if (hrp.Position - currentTarget.Position).Magnitude < 2.5 then
-        hrp.CFrame = currentTarget.CFrame
     end
 end)
