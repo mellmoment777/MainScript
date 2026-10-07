@@ -1,6 +1,5 @@
 -- ============================================================================
 -- Azure MM2 Farm v1.0 — DEOBFUSCATED
--- Цель: Roblox — Murder Mystery 2 (MM2)
 -- ============================================================================
 
 local Players           = game:GetService("Players")
@@ -13,6 +12,7 @@ local VirtualUser       = game:GetService("VirtualUser")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
+-- ─── Состояние ─────────────────────────────────────────────────────────────
 local autoFarm       = false
 local farmingActive  = false
 local autoReset      = false
@@ -21,21 +21,26 @@ local antiAFKEnabled = false
 local resetting      = false
 local startCFrame    = nil
 local coinsCollected = 0
-local currentTarget  = nil   -- [ДОБАВЛЕНО] текущая целевая монета
+local currentTarget  = nil
 
+-- ─── Параметры полёта (изменяются слайдерами в реальном времени) ───────────
+local SPEED       = 60     -- studs/sec
+local smoothAlpha = 0.6    -- коэффициент lerp (0.1=очень плавно, 1.0=чётко)
+local REACH       = 4      -- радиус подбора монеты
+
+-- ─── Удаление старой копии GUI ─────────────────────────────────────────────
 local old = PlayerGui:FindFirstChild("AzureMM2UI")
-if old then
-    old:Destroy()
-end
+if old then old:Destroy() end
 
+-- ─── GUI ────────────────────────────────────────────────────────────────────
 local gui = Instance.new("ScreenGui")
 gui.Name = "AzureMM2UI"
 gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 340, 0, 280)
-main.Position = UDim2.new(0.5, -170, 0.5, -140)
+main.Size = UDim2.new(0, 340, 0, 320)   -- увеличено под слайдеры
+main.Position = UDim2.new(0.5, -170, 0.5, -160)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = Color3.fromRGB(8, 12, 25)
 main.BackgroundTransparency = 0
@@ -112,8 +117,8 @@ local closeCorner = Instance.new("UICorner")
 closeCorner.Parent = closeBtn
 
 local content = Instance.new("Frame")
-content.Size = UDim2.new(0.94, 0, 0.78, 0)
-content.Position = UDim2.new(0.03, 0, 0.17, 0)
+content.Size = UDim2.new(0.94, 0, 0.80, 0)
+content.Position = UDim2.new(0.03, 0, 0.15, 0)
 content.BackgroundColor3 = Color3.fromRGB(10, 18, 32)
 content.BackgroundTransparency = 0.15
 content.BorderSizePixel = 0
@@ -129,6 +134,124 @@ inner.Position = UDim2.new(0, 7, 0, 7)
 inner.BackgroundTransparency = 1
 inner.Parent = content
 
+-- ─── Тумблер ────────────────────────────────────────────────────────────────
+local KNOB_ON_POS      = UDim2.new(1, -26, 0, 2)
+local KNOB_OFF_POS     = UDim2.new(0, 2, 0, 2)
+local TOGGLE_ON_COLOR  = Color3.fromRGB(60, 160, 255)
+local TOGGLE_OFF_COLOR = Color3.fromRGB(80, 80, 100)
+local KNOB_COLOR       = Color3.fromRGB(245, 250, 255)
+
+local function setToggle(toggle, knob, on)
+    knob.Position = on and KNOB_ON_POS or KNOB_OFF_POS
+    toggle.BackgroundColor3 = on and TOGGLE_ON_COLOR or TOGGLE_OFF_COLOR
+    knob.BackgroundColor3 = KNOB_COLOR
+end
+
+-- ─── Фабрика слайдеров ───────────────────────────────────────────────────────
+-- yPos      — Y-позиция верхнего края лейбла внутри inner
+-- labelText — статичная метка слева
+-- minVal    — минимальное значение
+-- maxVal    — максимальное значение
+-- defaultVal— начальное значение
+-- onChange  — callback(newValue) при каждом изменении
+local function makeSlider(parent, yPos, labelText, minVal, maxVal, defaultVal, onChange)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.60, 0, 0, 18)
+    lbl.Position = UDim2.new(0.03, 0, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamSemibold
+    lbl.TextSize = 13
+    lbl.TextColor3 = Color3.fromRGB(200, 230, 255)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = labelText
+    lbl.Parent = parent
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0.28, 0, 0, 18)
+    valLbl.Position = UDim2.new(0.70, 0, 0, yPos)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Font = Enum.Font.GothamBold
+    valLbl.TextSize = 13
+    valLbl.TextColor3 = Color3.fromRGB(60, 160, 255)
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.Parent = parent
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(0.88, 0, 0, 6)
+    track.Position = UDim2.new(0.06, 0, 0, yPos + 22)
+    track.BackgroundColor3 = Color3.fromRGB(30, 50, 80)
+    track.BorderSizePixel = 0
+    track.ClipsDescendants = false
+    track.Parent = parent
+
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(1, 0)
+    trackCorner.Parent = track
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(60, 160, 255)
+    fill.BorderSizePixel = 0
+    fill.ZIndex = 2
+    fill.Parent = track
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = fill
+
+    local thumb = Instance.new("Frame")
+    thumb.Size = UDim2.new(0, 14, 0, 14)
+    thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+    thumb.Position = UDim2.new(0, 0, 0.5, 0)
+    thumb.BackgroundColor3 = Color3.fromRGB(245, 250, 255)
+    thumb.BorderSizePixel = 0
+    thumb.ZIndex = 3
+    thumb.Parent = track
+
+    local thumbCorner = Instance.new("UICorner")
+    thumbCorner.CornerRadius = UDim.new(1, 0)
+    thumbCorner.Parent = thumb
+
+    local function setValue(val)
+        val = math.clamp(val, minVal, maxVal)
+        local pct = (val - minVal) / (maxVal - minVal)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        thumb.Position = UDim2.new(pct, 0, 0.5, 0)
+        valLbl.Text = tostring(math.round(val))
+        onChange(val)
+    end
+
+    setValue(defaultVal)
+
+    local draggingSlider = false
+
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = true
+            local relX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, track.AbsoluteSize.X)
+            setValue(minVal + (maxVal - minVal) * (relX / track.AbsoluteSize.X))
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if draggingSlider and (
+            input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local relX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, track.AbsoluteSize.X)
+            setValue(minVal + (maxVal - minVal) * (relX / track.AbsoluteSize.X))
+        end
+    end)
+end
+
+-- ─── Ряд Auto Farm ──────────────────────────────────────────────────────────
 local farmLabel = Instance.new("TextLabel")
 farmLabel.Size = UDim2.new(0.7, 0, 0, 28)
 farmLabel.Position = UDim2.new(0.03, 0, 0, 4)
@@ -162,6 +285,7 @@ local farmKnobCorner = Instance.new("UICorner")
 farmKnobCorner.CornerRadius = UDim.new(1, 0)
 farmKnobCorner.Parent = farmKnob
 
+-- ─── Ряд Auto Reset ─────────────────────────────────────────────────────────
 local resetLabel = Instance.new("TextLabel")
 resetLabel.Size = UDim2.new(0.7, 0, 0, 28)
 resetLabel.Position = UDim2.new(0.03, 0, 0, 44)
@@ -195,9 +319,23 @@ local resetKnobCorner = Instance.new("UICorner")
 resetKnobCorner.CornerRadius = UDim.new(1, 0)
 resetKnobCorner.Parent = resetKnob
 
+-- ─── Слайдер: Speed ─────────────────────────────────────────────────────────
+-- диапазон 20–200 studs/sec; по умолчанию 60
+makeSlider(inner, 82, "🚀 Speed (studs/s)", 20, 200, 60, function(val)
+    SPEED = val
+end)
+
+-- ─── Слайдер: Smoothness ────────────────────────────────────────────────────
+-- 1 = мгновенный шаг (crisp), 10 = плавный lerp (floaty)
+-- внутренне: alpha = 1.0 - (val-1)/9 * 0.9 → диапазон 1.0..0.1
+makeSlider(inner, 120, "✨ Smoothness (1=crisp, 10=floaty)", 1, 10, 5, function(val)
+    smoothAlpha = 1.0 - (val - 1) / 9 * 0.9
+end)
+
+-- ─── Кнопка Anti-AFK ────────────────────────────────────────────────────────
 local antiAFKBtn = Instance.new("TextButton")
 antiAFKBtn.Size = UDim2.new(0.9, 0, 0, 34)
-antiAFKBtn.Position = UDim2.new(0.05, 0, 0, 134)
+antiAFKBtn.Position = UDim2.new(0.05, 0, 0, 160)   -- сдвинуто вниз под слайдеры
 antiAFKBtn.BackgroundColor3 = Color3.fromRGB(55, 130, 200)
 antiAFKBtn.Font = Enum.Font.GothamBold
 antiAFKBtn.TextSize = 15
@@ -209,9 +347,10 @@ local antiAFKCorner = Instance.new("UICorner")
 antiAFKCorner.CornerRadius = UDim.new(0, 8)
 antiAFKCorner.Parent = antiAFKBtn
 
+-- ─── Строка статуса ─────────────────────────────────────────────────────────
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(0.9, 0, 0, 26)
-statusLabel.Position = UDim2.new(0.05, 0, 0, 184)
+statusLabel.Position = UDim2.new(0.05, 0, 0, 208)   -- сдвинуто вниз
 statusLabel.BackgroundTransparency = 1
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextSize = 14
@@ -220,43 +359,33 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Text = "⏱ Time: 0d 00h 00m 00s"
 statusLabel.Parent = inner
 
-local KNOB_ON_POS  = UDim2.new(1, -26, 0, 2)
-local KNOB_OFF_POS = UDim2.new(0, 2, 0, 2)
-local TOGGLE_ON_COLOR  = Color3.fromRGB(60, 160, 255)
-local TOGGLE_OFF_COLOR = Color3.fromRGB(80, 80, 100)
-local KNOB_COLOR = Color3.fromRGB(245, 250, 255)
-
-local function setToggle(toggle, knob, on)
-    knob.Position = on and KNOB_ON_POS or KNOB_OFF_POS
-    toggle.BackgroundColor3 = on and TOGGLE_ON_COLOR or TOGGLE_OFF_COLOR
-    knob.BackgroundColor3 = KNOB_COLOR
-end
-
+-- ─── Таймер сессии ──────────────────────────────────────────────────────────
 local sessionStart = os.clock()
 
 task.spawn(function()
     while true do
         task.wait(1)
         local t = os.clock() - sessionStart
-        local d  = math.floor(t / 86400)
-        local h  = math.floor((t % 86400) / 3600)
-        local m  = math.floor((t % 3600) / 60)
-        local s  = math.floor(t % 60)
+        local d = math.floor(t / 86400)
+        local h = math.floor((t % 86400) / 3600)
+        local m = math.floor((t % 3600) / 60)
+        local s = math.floor(t % 60)
         statusLabel.Text = string.format("⏱ Time: %dd %02dh %02dm %02ds", d, h, m, s)
     end
 end)
 
-local dragging = false
+-- ─── Перетаскивание ─────────────────────────────────────────────────────────
+local dragging  = false
 local dragInput = nil
 local dragStart = nil
-local startPos = nil
+local startPos  = nil
 
 main.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
-        startPos = main.Position
+        startPos  = main.Position
     end
 end)
 
@@ -277,16 +406,18 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+-- ─── Свернуть / закрыть ─────────────────────────────────────────────────────
 local minimized = false
 minBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
-    main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 280)
+    main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 320)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
     gui:Destroy()
 end)
 
+-- ─── Анти-AFK ───────────────────────────────────────────────────────────────
 LocalPlayer.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
@@ -299,6 +430,7 @@ antiAFKBtn.MouseButton1Click:Connect(function()
         or Color3.fromRGB(55, 130, 200)
 end)
 
+-- ─── Тумблеры ───────────────────────────────────────────────────────────────
 farmToggle.MouseButton1Click:Connect(function()
     autoFarm = not autoFarm
     setToggle(farmToggle, farmKnob, autoFarm)
@@ -313,6 +445,7 @@ resetToggle.MouseButton1Click:Connect(function()
     setToggle(resetToggle, resetKnob, autoReset)
 end)
 
+-- ─── Remotes MM2 ────────────────────────────────────────────────────────────
 local Remotes       = ReplicatedStorage:WaitForChild("Remotes")
 local Gameplay      = Remotes:WaitForChild("Gameplay")
 local CoinCollected = Gameplay:WaitForChild("CoinCollected")
@@ -333,9 +466,7 @@ CoinCollected.OnClientEvent:Connect(function(...)
             local nums = parseCounter(arg)
             if #nums >= 1 then
                 bagFull = true
-                if autoReset then
-                    resetting = true
-                end
+                if autoReset then resetting = true end
                 local character = LocalPlayer.Character
                 if character then
                     character:WaitForChild("HumanoidRootPart")
@@ -354,25 +485,21 @@ RoundStart.OnClientEvent:Connect(function()
         end
     end
     farmingActive = true
-    bagFull = false
-    resetting = false
-    currentTarget = nil   -- сброс цели на новый раунд
+    bagFull       = false
+    resetting     = false
+    currentTarget = nil
 end)
 
 RoundEndFade.OnClientEvent:Connect(function()
     farmingActive = false
-    currentTarget = nil   -- сброс цели при конце раунда
+    currentTarget = nil
 end)
 
--- ─── Фарм-цикл (плавное движение) ──────────────────────────────────────────
--- [ИЗМЕНЕНО] вместо мгновенного телепорта — движение шагами.
--- SPEED: скорость в studs/sec. REACH: радиус подбора монеты.
--- Каждый тик двигаемся на STEP studs в сторону цели.
--- При исчезновении монеты (собрали другие / раунд кончился) — сброс цели.
-local SPEED = 60    -- studs/sec (нормальная ходьба 16, бег ~24; 60 — быстро но плавно)
-local STEP  = SPEED * 0.18   -- studs за один тик (~10.8)
-local REACH = 4     -- studs — считаем монету подобранной, ищем следующую
-
+-- ─── Фарм-цикл (lerp + speed cap) ──────────────────────────────────────────
+-- Движение = lerp(currentPos, targetPos, smoothAlpha), ограниченный SPEED*0.18.
+-- smoothAlpha управляет кривой приближения:
+--   1.0 → прямой шаг фиксированной длины (crisp)
+--   0.1 → экспоненциальный затухающий подлёт (floaty)
 task.spawn(function()
     while true do
         task.wait(0.18)
@@ -381,7 +508,7 @@ task.spawn(function()
             if character then
                 local hrp = character:WaitForChild("HumanoidRootPart")
 
-                -- инвалидация цели: монета исчезла или больше нет TouchInterest
+                -- инвалидация цели
                 if currentTarget then
                     if not currentTarget.Parent
                         or not currentTarget:FindFirstChild("TouchInterest") then
@@ -389,7 +516,7 @@ task.spawn(function()
                     end
                 end
 
-                -- нет цели — ищем ближайшую монету
+                -- поиск ближайшей монеты
                 if not currentTarget then
                     local bestDist = math.huge
                     for _, v in ipairs(workspace:GetChildren()) do
@@ -409,19 +536,21 @@ task.spawn(function()
                     end
                 end
 
-                -- есть цель — двигаемся к ней шагом
                 if currentTarget then
-                    local targetPos = currentTarget.Position
+                    local targetPos  = currentTarget.Position
                     local currentPos = hrp.Position
                     local dist = (currentPos - targetPos).Magnitude
 
                     if dist <= REACH then
-                        -- достигли монеты — сбрасываем, следующий тик выберет новую
                         currentTarget = nil
                     else
-                        local direction = (targetPos - currentPos).Unit
-                        local moveStep  = math.min(STEP, dist)
-                        hrp.CFrame = CFrame.new(currentPos + direction * moveStep)
+                        -- lerp вектор движения + ограничение по скорости
+                        local moveVec = (targetPos - currentPos) * smoothAlpha
+                        local maxDist = SPEED * 0.18
+                        if moveVec.Magnitude > maxDist then
+                            moveVec = moveVec.Unit * maxDist
+                        end
+                        hrp.CFrame = CFrame.new(currentPos + moveVec)
                     end
                 end
             end
