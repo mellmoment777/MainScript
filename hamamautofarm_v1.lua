@@ -651,16 +651,12 @@ task.spawn(function()
         if bestCoin then
             currentTarget      = bestCoin
             currentTargetStart = os.clock()
-            local ti = TweenInfo.new(tweenSpeed, getEasingStyle(), Enum.EasingDirection.Out)
-            hrp.Anchored = false
-            currentTween = TweenService:Create(hrp, ti, { CFrame = bestCoin.CFrame })
+            local ti           = TweenInfo.new(tweenSpeed, getEasingStyle(), Enum.EasingDirection.Out)
+            local targetCF     = CFrame.new(bestCoin.Position.X, hrp.Position.Y, bestCoin.Position.Z)
+            hrp.Anchored       = true
+            currentTween = TweenService:Create(hrp, ti, { CFrame = targetCF })
             currentTween.Completed:Connect(function()
                 currentTween = nil
-                local ch = LocalPlayer.Character
-                local h  = ch and ch:FindFirstChild("HumanoidRootPart")
-                if h and autoFarm and farmingActive and not resetting then
-                    h.Anchored = true
-                end
             end)
             currentTween:Play()
         end
@@ -668,6 +664,17 @@ task.spawn(function()
 end)
 
 RunService.Heartbeat:Connect(function()
+    if autoFarm and farmingActive and not resetting then
+        local ch  = LocalPlayer.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum then
+            local state = hum:GetState()
+            if state == Enum.HumanoidStateType.Freefall
+                or state == Enum.HumanoidStateType.Jumping then
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+            end
+        end
+    end
     if not currentTarget then return end
     if not currentTarget.Parent or not currentTarget:FindFirstChild("TouchInterest") then
         currentTarget = nil
