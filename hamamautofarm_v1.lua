@@ -415,12 +415,18 @@ local dragging  = false
 local dragStart = nil
 local startPos  = nil
 
-header.InputBegan:Connect(function(input)
+UserInputService.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        dragging  = true
-        dragStart = input.Position
-        startPos  = main.Position
+        local pos = input.Position
+        local ap  = header.AbsolutePosition
+        local as  = header.AbsoluteSize
+        if pos.X >= ap.X and pos.X <= ap.X + as.X
+            and pos.Y >= ap.Y and pos.Y <= ap.Y + as.Y then
+            dragging  = true
+            dragStart = pos
+            startPos  = main.Position
+        end
     end
 end)
 
@@ -513,6 +519,9 @@ farmToggle.MouseButton1Click:Connect(function()
             currentTween = nil
         end
         currentTarget = nil
+        restoreMapCollision()
+    elseif farmingActive then
+        task.spawn(disableMapCollision)
     end
 end)
 
@@ -569,9 +578,11 @@ RoundStart.OnClientEvent:Connect(function()
         currentTween = nil
     end
     currentTarget = nil
-    task.delay(1, function()
-        task.spawn(disableMapCollision)
-    end)
+    if autoFarm then
+        task.delay(1, function()
+            task.spawn(disableMapCollision)
+        end)
+    end
 end)
 
 RoundEndFade.OnClientEvent:Connect(function()
