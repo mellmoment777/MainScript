@@ -73,7 +73,7 @@ gui.Parent       = LocalPlayer:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
 main.Size                   = UDim2.new(0, 340, 0, 420)
-main.Position               = UDim2.new(0.5, -170, 0.5, -210)
+main.Position               = UDim2.new(0.5, 0, 0.5, 0)
 main.AnchorPoint            = Vector2.new(0.5, 0.5)
 main.BackgroundColor3       = Color3.fromRGB(8, 12, 25)
 main.BackgroundTransparency = 0
