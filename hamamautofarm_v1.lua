@@ -17,10 +17,12 @@ local resetting      = false
 local startCFrame    = nil
 local coinsCollected = 0
 local currentTarget  = nil
+local scanTimer      = 0
 
-local SPEED       = 60
-local smoothAlpha = 0.6
-local REACH       = 4
+local SPEED        = 60
+local smoothAlpha  = 0.6
+local REACH        = 5
+local SCAN_INTERVAL = 0.3
 
 local old = PlayerGui:FindFirstChild("AzureMM2UI")
 if old then old:Destroy() end
@@ -306,7 +308,7 @@ makeSlider(inner, 82, "🚀 Speed (studs/s)", 20, 200, 60, function(val)
 end)
 
 makeSlider(inner, 120, "✨ Smoothness (1=crisp, 10=floaty)", 1, 10, 5, function(val)
-    smoothAlpha = 1.0 - (val - 1) / 9 * 0.9
+    smoothAlpha = 1.0 - (val - 1) / 9 * 0.92
 end)
 
 local antiAFKBtn = Instance.new("TextButton")
@@ -464,6 +466,7 @@ RoundStart.OnClientEvent:Connect(function()
     bagFull       = false
     resetting     = false
     currentTarget = nil
+    scanTimer     = SCAN_INTERVAL
 end)
 
 RoundEndFade.OnClientEvent:Connect(function()
@@ -471,57 +474,59 @@ RoundEndFade.OnClientEvent:Connect(function()
     currentTarget = nil
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(0.18)
-        if autoFarm and farmingActive and not resetting then
-            local character = LocalPlayer.Character
-            if character then
-                local hrp = character:WaitForChild("HumanoidRootPart")
+RunService.Heartbeat:Connect(function(dt)
+    if not (autoFarm and farmingActive and not resetting) then return end
 
-                if currentTarget then
-                    if not currentTarget.Parent
-                        or not currentTarget:FindFirstChild("TouchInterest") then
-                        currentTarget = nil
-                    end
-                end
+    local character = LocalPlayer.Character
+    if not character then return end
 
-                if not currentTarget then
-                    local bestDist = math.huge
-                    for _, v in ipairs(workspace:GetChildren()) do
-                        local cc = v:FindFirstChild("CoinContainer")
-                        if cc then
-                            for _, coin in ipairs(cc:GetChildren()) do
-                                if coin:IsA("BasePart")
-                                    and coin:FindFirstChild("TouchInterest") then
-                                    local d = (hrp.Position - coin.Position).Magnitude
-                                    if d < bestDist then
-                                        bestDist = d
-                                        currentTarget = coin
-                                    end
-                                end
-                            end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if currentTarget and (not currentTarget.Parent or not currentTarget:FindFirstChild("TouchInterest")) then
+        currentTarget = nil
+        scanTimer = SCAN_INTERVAL
+    end
+
+    scanTimer = scanTimer + dt
+    if scanTimer >= SCAN_INTERVAL or not currentTarget then
+        scanTimer = 0
+        local bestDist = math.huge
+        local bestCoin = nil
+        for _, v in ipairs(workspace:GetChildren()) do
+            local cc = v:FindFirstChild("CoinContainer")
+            if cc then
+                for _, coin in ipairs(cc:GetChildren()) do
+                    if coin:IsA("BasePart") and coin:FindFirstChild("TouchInterest") then
+                        local d = (hrp.Position - coin.Position).Magnitude
+                        if d < bestDist then
+                            bestDist = d
+                            bestCoin = coin
                         end
-                    end
-                end
-
-                if currentTarget then
-                    local targetPos  = currentTarget.Position
-                    local currentPos = hrp.Position
-                    local dist = (currentPos - targetPos).Magnitude
-
-                    if dist <= REACH then
-                        currentTarget = nil
-                    else
-                        local moveVec = (targetPos - currentPos) * smoothAlpha
-                        local maxDist = SPEED * 0.18
-                        if moveVec.Magnitude > maxDist then
-                            moveVec = moveVec.Unit * maxDist
-                        end
-                        hrp.CFrame = CFrame.new(currentPos + moveVec)
                     end
                 end
             end
         end
+        currentTarget = bestCoin
+    end
+
+    if not currentTarget then return end
+
+    local targetPos  = currentTarget.Position
+    local currentPos = hrp.Position
+    local dist = (currentPos - targetPos).Magnitude
+
+    if dist <= REACH then
+        hrp.CFrame = CFrame.new(targetPos)
+        currentTarget = nil
+        scanTimer = SCAN_INTERVAL
+    else
+        local lerpFactor = math.min(smoothAlpha * dt * 60, 1)
+        local moveVec = (targetPos - currentPos) * lerpFactor
+        local maxDist = SPEED * dt
+        if moveVec.Magnitude > maxDist then
+            moveVec = moveVec.Unit * maxDist
+        end
+        hrp.CFrame = CFrame.new(currentPos + moveVec)
     end
 end)
