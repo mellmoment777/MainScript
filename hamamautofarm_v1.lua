@@ -10,6 +10,7 @@ local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
 local autoFarm       = false
 local farmingActive  = false
+local roundActive    = false
 local autoReset      = false
 local bagFull        = false
 local antiAFKEnabled = false
@@ -19,16 +20,16 @@ local coinsCollected = 0
 local currentTarget  = nil
 local scanTimer      = 0
 
-local SPEED        = 60
-local smoothAlpha  = 0.6
-local REACH        = 5
+local SPEED         = 60
+local smoothAlpha   = 0.6
+local REACH         = 5
 local SCAN_INTERVAL = 0.3
 
-local old = PlayerGui:FindFirstChild("AzureMM2UI")
+local old = PlayerGui:FindFirstChild("MellMM2UI")
 if old then old:Destroy() end
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "AzureMM2UI"
+gui.Name = "MellMM2UI"
 gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -65,7 +66,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(0.7, -10, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Azure MM2 Farm"
+title.Text = "Mell MM2 Farm"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 20
 title.TextColor3 = Color3.fromRGB(175, 220, 255)
@@ -410,11 +411,35 @@ antiAFKBtn.MouseButton1Click:Connect(function()
         or Color3.fromRGB(55, 130, 200)
 end)
 
+local function disableMapCollisions()
+    local charSet = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            charSet[plr.Character] = true
+        end
+    end
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if not charSet[obj] and not obj:IsA("Camera") and not obj:IsA("Terrain") then
+            if obj:IsA("BasePart") then
+                obj.CanCollide = false
+            end
+            for _, part in ipairs(obj:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end
+
 farmToggle.MouseButton1Click:Connect(function()
     autoFarm = not autoFarm
     setToggle(farmToggle, farmKnob, autoFarm)
-    if not autoFarm then
-        farmingActive = false
+    farmingActive = autoFarm and roundActive
+    if autoFarm and roundActive then
+        disableMapCollisions()
+        scanTimer = SCAN_INTERVAL
+    else
         currentTarget = nil
     end
 end)
@@ -462,14 +487,20 @@ RoundStart.OnClientEvent:Connect(function()
             startCFrame = hrp.CFrame
         end
     end
-    farmingActive = true
+    roundActive   = true
+    farmingActive = autoFarm
     bagFull       = false
     resetting     = false
     currentTarget = nil
     scanTimer     = SCAN_INTERVAL
+    if autoFarm then
+        task.wait(1)
+        disableMapCollisions()
+    end
 end)
 
 RoundEndFade.OnClientEvent:Connect(function()
+    roundActive   = false
     farmingActive = false
     currentTarget = nil
 end)
