@@ -19,7 +19,7 @@ local currentTween       = nil
 local currentTarget      = nil
 local currentTargetStart = 0
 local savedCanCollide    = {}
-local tweenSpeed         = 0.25
+local tweenSpeed         = 1.2
 local tweenSmoothnessVal = 0.25
 local speedDragging      = false
 local smoothDragging     = false
@@ -266,7 +266,7 @@ local speedValueLabel = Instance.new("TextLabel")
 speedValueLabel.Size                   = UDim2.new(0.28, 0, 0, 18)
 speedValueLabel.Position               = UDim2.new(0.69, 0, 0, 130)
 speedValueLabel.BackgroundTransparency = 1
-speedValueLabel.Text                   = "0.25s"
+speedValueLabel.Text                   = "1.20s"
 speedValueLabel.Font                   = Enum.Font.Gotham
 speedValueLabel.TextSize               = 13
 speedValueLabel.TextColor3             = Color3.fromRGB(130, 200, 255)
@@ -285,7 +285,7 @@ local speedTrackCorner = Instance.new("UICorner")
 speedTrackCorner.CornerRadius = UDim.new(1, 0)
 speedTrackCorner.Parent = speedTrack
 
-local speedDefaultRelX = (0.8 - tweenSpeed) / 0.75
+local speedDefaultRelX = (2.0 - tweenSpeed) / 1.95
 
 local speedFill = Instance.new("Frame")
 speedFill.Size             = UDim2.new(speedDefaultRelX, 0, 1, 0)
@@ -460,7 +460,7 @@ UserInputService.InputChanged:Connect(function(input)
         local relX = math.clamp((input.Position.X - ap.X) / as.X, 0, 1)
         speedKnob.Position   = UDim2.new(relX, -10, 0.5, -10)
         speedFill.Size       = UDim2.new(relX, 0, 1, 0)
-        tweenSpeed           = 0.8 - relX * 0.75
+        tweenSpeed           = 2.0 - relX * 1.95
         speedValueLabel.Text = string.format("%.2fs", tweenSpeed)
     end
     if smoothDragging then
@@ -650,6 +650,7 @@ task.spawn(function()
             holdCFrame   = nil
             currentTween = TweenService:Create(hrp, ti, { CFrame = bestCoin.CFrame })
             currentTween.Completed:Connect(function()
+                currentTween = nil
                 if autoFarm and farmingActive and not resetting then
                     local ch = LocalPlayer.Character
                     local h  = ch and ch:FindFirstChild("HumanoidRootPart")
