@@ -415,18 +415,20 @@ local dragging  = false
 local dragStart = nil
 local startPos  = nil
 
-UserInputService.InputBegan:Connect(function(input)
+local dragArea = Instance.new("TextButton")
+dragArea.Size                   = UDim2.new(1, -80, 1, 0)
+dragArea.Position               = UDim2.new(0, 0, 0, 0)
+dragArea.BackgroundTransparency = 1
+dragArea.Text                   = ""
+dragArea.ZIndex                 = 5
+dragArea.Parent                 = header
+
+dragArea.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        local pos = input.Position
-        local ap  = header.AbsolutePosition
-        local as  = header.AbsoluteSize
-        if pos.X >= ap.X and pos.X <= ap.X + as.X
-            and pos.Y >= ap.Y and pos.Y <= ap.Y + as.Y then
-            dragging  = true
-            dragStart = pos
-            startPos  = main.Position
-        end
+        dragging  = true
+        dragStart = input.Position
+        startPos  = main.Position
     end
 end)
 
