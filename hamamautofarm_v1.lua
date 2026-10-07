@@ -1,20 +1,8 @@
 -- ============================================================================
 -- Azure MM2 Farm v1.0 — DEOBFUSCATED
 -- Цель: Roblox — Murder Mystery 2 (MM2)
--- Обфускатор: IronBrew2 (форк с "stringify"-диспетчером, Lua 5.1 VM)
---
--- Восстановлено по: расшифрованным строковым константам VM (ленивое
--- дешифрование: каждая константа снята в момент первого использования),
--- полному поведенческому трассу VM (песочница Lua 5.1 + эмуляция Roblox API
--- с корутинным планировщиком потоков), дампу таблицы состояния VM
--- (флаги autoFarm/farmingActive/autoReset/bagFull/resetting/startCFrame).
--- Все строковые константы, пути, RemoteEvent'ы и флаги — ОРИГИНАЛЬНЫЕ
--- (проверено трассой и дампом таблицы строк lB).
--- Имена локальных переменных восстановлению не подлежат (байткод Lua их
--- не хранит) — на работу скрипта не влияют.
 -- ============================================================================
 
--- ─── Сервисы ────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local TweenService      = game:GetService("TweenService")
@@ -25,29 +13,26 @@ local VirtualUser       = game:GetService("VirtualUser")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
--- ─── Состояние чита (флаги из расшифрованных констант) ─────────────────────
-local autoFarm       = false   -- главный переключатель фарма
-local farmingActive  = false   -- активная фаза фарма (раунд идёт)
-local autoReset      = false   -- авторесет персонажа при полной сумке
-local bagFull        = false   -- «сумка полна»
-local antiAFKEnabled = false   -- анти-AFK
-local resetting      = false   -- идёт сброс персонажа
-local startCFrame    = nil     -- позиция до начала фарма (возврат после раунда)
-local coinsCollected = 0       -- счётчик монет за раунд
+local autoFarm       = false
+local farmingActive  = false
+local autoReset      = false
+local bagFull        = false
+local antiAFKEnabled = false
+local resetting      = false
+local startCFrame    = nil
+local coinsCollected = 0
+local currentTarget  = nil   -- [ДОБАВЛЕНО] текущая целевая монета
 
--- ─── Удаление старой копии GUI при повторном запуске ───────────────────────
 local old = PlayerGui:FindFirstChild("AzureMM2UI")
 if old then
-        old:Destroy()
+    old:Destroy()
 end
 
--- ─── Построение GUI (все значения — из трассы выполнения VM) ───────────────
 local gui = Instance.new("ScreenGui")
 gui.Name = "AzureMM2UI"
 gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- Главная панель
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, 340, 0, 280)
 main.Position = UDim2.new(0.5, -170, 0.5, -140)
@@ -61,7 +46,6 @@ local mainCorner = Instance.new("UICorner")
 mainCorner.CornerRadius = UDim.new(0, 12)
 mainCorner.Parent = main
 
--- Свечение по контуру
 local glow = Instance.new("Frame")
 glow.Size = UDim2.new(1, 6, 1, 6)
 glow.Position = UDim2.new(0, -3, 0, -3)
@@ -72,7 +56,6 @@ glow.BorderSizePixel = 0
 glow.ClipsDescendants = true
 glow.Parent = main
 
--- Шапка
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 52)
 header.Position = UDim2.new(0, 0, 0, 0)
@@ -128,7 +111,6 @@ closeBtn.Parent = header
 local closeCorner = Instance.new("UICorner")
 closeCorner.Parent = closeBtn
 
--- Панель содержимого
 local content = Instance.new("Frame")
 content.Size = UDim2.new(0.94, 0, 0.78, 0)
 content.Position = UDim2.new(0.03, 0, 0.17, 0)
@@ -147,7 +129,6 @@ inner.Position = UDim2.new(0, 7, 0, 7)
 inner.BackgroundTransparency = 1
 inner.Parent = content
 
--- Ряд "Auto Farm"
 local farmLabel = Instance.new("TextLabel")
 farmLabel.Size = UDim2.new(0.7, 0, 0, 28)
 farmLabel.Position = UDim2.new(0.03, 0, 0, 4)
@@ -181,7 +162,6 @@ local farmKnobCorner = Instance.new("UICorner")
 farmKnobCorner.CornerRadius = UDim.new(1, 0)
 farmKnobCorner.Parent = farmKnob
 
--- Ряд "Auto Reset (when bag full)"
 local resetLabel = Instance.new("TextLabel")
 resetLabel.Size = UDim2.new(0.7, 0, 0, 28)
 resetLabel.Position = UDim2.new(0.03, 0, 0, 44)
@@ -215,7 +195,6 @@ local resetKnobCorner = Instance.new("UICorner")
 resetKnobCorner.CornerRadius = UDim.new(1, 0)
 resetKnobCorner.Parent = resetKnob
 
--- Кнопка Anti-AFK
 local antiAFKBtn = Instance.new("TextButton")
 antiAFKBtn.Size = UDim2.new(0.9, 0, 0, 34)
 antiAFKBtn.Position = UDim2.new(0.05, 0, 0, 134)
@@ -230,7 +209,6 @@ local antiAFKCorner = Instance.new("UICorner")
 antiAFKCorner.CornerRadius = UDim.new(0, 8)
 antiAFKCorner.Parent = antiAFKBtn
 
--- Строка статуса (таймер сессии)
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(0.9, 0, 0, 26)
 statusLabel.Position = UDim2.new(0.05, 0, 0, 184)
@@ -242,7 +220,6 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Text = "⏱ Time: 0d 00h 00m 00s"
 statusLabel.Parent = inner
 
--- ─── Анимация тумблеров (позиции/цвета из трассы: ON и OFF) ────────────────
 local KNOB_ON_POS  = UDim2.new(1, -26, 0, 2)
 local KNOB_OFF_POS = UDim2.new(0, 2, 0, 2)
 local TOGGLE_ON_COLOR  = Color3.fromRGB(60, 160, 255)
@@ -250,211 +227,204 @@ local TOGGLE_OFF_COLOR = Color3.fromRGB(80, 80, 100)
 local KNOB_COLOR = Color3.fromRGB(245, 250, 255)
 
 local function setToggle(toggle, knob, on)
-        knob.Position = on and KNOB_ON_POS or KNOB_OFF_POS
-        toggle.BackgroundColor3 = on and TOGGLE_ON_COLOR or TOGGLE_OFF_COLOR
-        knob.BackgroundColor3 = KNOB_COLOR
+    knob.Position = on and KNOB_ON_POS or KNOB_OFF_POS
+    toggle.BackgroundColor3 = on and TOGGLE_ON_COLOR or TOGGLE_OFF_COLOR
+    knob.BackgroundColor3 = KNOB_COLOR
 end
 
--- ─── Таймер сессии ─────────────────────────────────────────────────────────
 local sessionStart = os.clock()
 
 task.spawn(function()
-        while true do
-                task.wait(1)
-                local t = os.clock() - sessionStart
-                local d  = math.floor(t / 86400)
-                local h  = math.floor((t % 86400) / 3600)
-                local m  = math.floor((t % 3600) / 60)
-                local s  = math.floor(t % 60)
-                statusLabel.Text = string.format("⏱ Time: %dd %02dh %02dm %02ds", d, h, m, s)
-        end
+    while true do
+        task.wait(1)
+        local t = os.clock() - sessionStart
+        local d  = math.floor(t / 86400)
+        local h  = math.floor((t % 86400) / 3600)
+        local m  = math.floor((t % 3600) / 60)
+        local s  = math.floor(t % 60)
+        statusLabel.Text = string.format("⏱ Time: %dd %02dh %02dm %02ds", d, h, m, s)
+    end
 end)
 
--- ─── Перетаскивание окна (стандартная схема: InputBegan/InputChanged) ──────
 local dragging = false
 local dragInput = nil
 local dragStart = nil
 local startPos = nil
 
 main.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true
-                dragStart = input.Position
-                startPos = main.Position
-        end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
 end)
 
 main.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-                or input.UserInputType == Enum.UserInputType.Touch then
-                dragInput = input
-        end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-        if dragging and input == dragInput then
-                local delta = input.Position - dragStart
-                main.Position = UDim2.new(
-                        startPos.X.Scale, startPos.X.Offset + delta.X,
-                        startPos.Y.Scale, startPos.Y.Offset + delta.Y
-                )
-        end
+    if dragging and input == dragInput then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
 end)
 
--- ─── Свернуть / закрыть ────────────────────────────────────────────────────
 local minimized = false
 minBtn.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 280)
+    minimized = not minimized
+    main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 280)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-        gui:Destroy()
+    gui:Destroy()
 end)
 
--- ─── Анти-AFK (схема через VirtualUser — подтверждена трассой) ─────────────
--- Трасса: Idled:Connect вызывается СРАЗУ при запуске (до игровых ремоутов),
--- хендлер БЕЗУСЛОВНО жмёт CaptureController + ClickButton2(Vector2.new(0,0))
--- (вызов VirtualUser произошёл при fire Idled при выключенном флаге).
--- Кнопка Anti-AFK лишь переключает флаг и цвет (ON (70,190,140) — из трассы).
 LocalPlayer.Idled:Connect(function()
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
 end)
 
 antiAFKBtn.MouseButton1Click:Connect(function()
-        antiAFKEnabled = not antiAFKEnabled
-        -- в трассе меняется только цвет (70,190,140); текст кнопка не меняет
-        antiAFKBtn.BackgroundColor3 = antiAFKEnabled
-                and Color3.fromRGB(70, 190, 140)
-                or Color3.fromRGB(55, 130, 200)
+    antiAFKEnabled = not antiAFKEnabled
+    antiAFKBtn.BackgroundColor3 = antiAFKEnabled
+        and Color3.fromRGB(70, 190, 140)
+        or Color3.fromRGB(55, 130, 200)
 end)
 
--- ─── Тумблеры ──────────────────────────────────────────────────────────────
 farmToggle.MouseButton1Click:Connect(function()
-        autoFarm = not autoFarm
-        setToggle(farmToggle, farmKnob, autoFarm)
-        if not autoFarm then
-                farmingActive = false
-        end
+    autoFarm = not autoFarm
+    setToggle(farmToggle, farmKnob, autoFarm)
+    if not autoFarm then
+        farmingActive = false
+        currentTarget = nil
+    end
 end)
 
 resetToggle.MouseButton1Click:Connect(function()
-        autoReset = not autoReset
-        setToggle(resetToggle, resetKnob, autoReset)
+    autoReset = not autoReset
+    setToggle(resetToggle, resetKnob, autoReset)
 end)
 
--- ─── Игровые события MM2 (Remotes: ReplicatedStorage/Remotes/Gameplay) ─────
 local Remotes       = ReplicatedStorage:WaitForChild("Remotes")
 local Gameplay      = Remotes:WaitForChild("Gameplay")
 local CoinCollected = Gameplay:WaitForChild("CoinCollected")
 local RoundStart    = Gameplay:WaitForChild("RoundStart")
 local RoundEndFade  = Gameplay:WaitForChild("RoundEndFade")
 
--- Разбор счётчика из текста (паттерн из расшифрованных констант: ":(%d*):")
 local function parseCounter(text)
-        local values = {}
-        for num in string.gmatch(tostring(text), ":(%d*):") do
-                table.insert(values, tonumber(num) or 0)
-        end
-        return values
+    local values = {}
+    for num in string.gmatch(tostring(text), ":(%d*):") do
+        table.insert(values, tonumber(num) or 0)
+    end
+    return values
 end
 
--- CoinCollected: payload — СТРОКА вида "Coins:<собрано>:<размер сумки>"
--- (подтверждено трассой: числовые payload'ы игнорируются, строковые
---  парсятся паттерном ":(%d*):" — ОДНОГО числа достаточно, чтобы bagFull=true
---  (проверено: "Coins:5:10" уже включает bagFull);
---  при включённом autoReset одновременно ставится resetting=true)
 CoinCollected.OnClientEvent:Connect(function(...)
-        for _, arg in ipairs({ ... }) do
-                if type(arg) == "string" then
-                        local nums = parseCounter(arg)
-                        if #nums >= 1 then
-                                bagFull = true
-                                if autoReset then
-                                        resetting = true
-                                end
-                                -- далее оригинал обращается к HumanoidRootPart
-                                -- (трасса: WaitForChild("HumanoidRootPart"))
-                                local character = LocalPlayer.Character
-                                if character then
-                                        character:WaitForChild("HumanoidRootPart")
-                                end
-                        end
+    for _, arg in ipairs({ ... }) do
+        if type(arg) == "string" then
+            local nums = parseCounter(arg)
+            if #nums >= 1 then
+                bagFull = true
+                if autoReset then
+                    resetting = true
                 end
+                local character = LocalPlayer.Character
+                if character then
+                    character:WaitForChild("HumanoidRootPart")
+                end
+            end
         end
+    end
 end)
 
--- RoundStart: сохранение позиции до раунда + сброс состояния (флаги —
--- подтверждены дампом таблицы состояния VM: farmingActive false->true,
--- bagFull/resetting сбрасываются к началу нового раунда)
 RoundStart.OnClientEvent:Connect(function()
-        local character = LocalPlayer.Character
-        if character then
-                local hrp = character:WaitForChild("HumanoidRootPart")
-                if not startCFrame then
-                        startCFrame = hrp.CFrame   -- сохранить точку возврата
-                end
+    local character = LocalPlayer.Character
+    if character then
+        local hrp = character:WaitForChild("HumanoidRootPart")
+        if not startCFrame then
+            startCFrame = hrp.CFrame
         end
-        farmingActive = true   -- подтверждено дампом состояния VM
-        bagFull = false
-        resetting = false
+    end
+    farmingActive = true
+    bagFull = false
+    resetting = false
+    currentTarget = nil   -- сброс цели на новый раунд
 end)
 
--- RoundEndFade: ТОЛЬКО останавливает фарм (трасса: никакой телепортации,
--- farmingActive true -> false; телепорт в оригинале отсутствует)
 RoundEndFade.OnClientEvent:Connect(function()
-        farmingActive = false
+    farmingActive = false
+    currentTarget = nil   -- сброс цели при конце раунда
 end)
 
--- ─── Фарм-цикл ─────────────────────────────────────────────────────────────
--- ПОЛНОСТЬЮ восстановлен из поведенческой трассы VM (константы CoinContainer,
--- TouchInterest, BasePart, GetChildren, Magnitude, math.huge расшифрованы
--- при первом исполнении ветки):
---   * период опроса — 0.18 сек (TASKWAIT 0.180 в трассе);
---   * каждая итерация: char:WaitForChild("HumanoidRootPart");
---   * скан: workspace:GetChildren() -> v:FindFirstChild("CoinContainer")
---     -> cc:GetChildren() -> coin:IsA("BasePart")
---        and coin:FindFirstChild("TouchInterest");
---   * имена монет НЕ проверяются — берутся все активные монеты;
---   * из них выбирается БЛИЖАЙШАЯ: (hrp.Position - coin.Position).Magnitude
---     при начальном bestDist = math.huge;
---   * телепорт к выбранной монете.
---   * «Auto Reset (when bag full)»: при полной сумке (bagFull=true от
---     CoinCollected) флаг resetting=true СТАВИТ ХЕНДЛЕР (если autoReset
---     включён) — фарм ПАУЗА до следующего RoundStart (тот сбрасывает
---     bagFull/resetting). CharacterAdded/Health=0 в трассе ОРИГИНАЛА
---     отсутствуют — персонаж оригинал не убивает.
+-- ─── Фарм-цикл (плавное движение) ──────────────────────────────────────────
+-- [ИЗМЕНЕНО] вместо мгновенного телепорта — движение шагами.
+-- SPEED: скорость в studs/sec. REACH: радиус подбора монеты.
+-- Каждый тик двигаемся на STEP studs в сторону цели.
+-- При исчезновении монеты (собрали другие / раунд кончился) — сброс цели.
+local SPEED = 60    -- studs/sec (нормальная ходьба 16, бег ~24; 60 — быстро но плавно)
+local STEP  = SPEED * 0.18   -- studs за один тик (~10.8)
+local REACH = 4     -- studs — считаем монету подобранной, ищем следующую
+
 task.spawn(function()
-        while true do
-                task.wait(0.18)   -- оригинальный интервал опроса
-                if autoFarm and farmingActive and not resetting then
-                        local character = LocalPlayer.Character
-                        if character then
-                                local hrp = character:WaitForChild("HumanoidRootPart")
-                                -- поиск ближайшей активной монеты карты
-                                local bestDist = math.huge
-                                local bestCoin = nil
-                                for _, v in ipairs(workspace:GetChildren()) do
-                                        local cc = v:FindFirstChild("CoinContainer")
-                                        if cc then
-                                                for _, coin in ipairs(cc:GetChildren()) do
-                                                        if coin:IsA("BasePart")
-                                                                and coin:FindFirstChild("TouchInterest") then
-                                                                local d = (hrp.Position - coin.Position).Magnitude
-                                                                if d < bestDist then
-                                                                        bestDist = d
-                                                                        bestCoin = coin
-                                                                end
-                                                        end
-                                                end
-                                        end
-                                end
-                                if bestCoin then
-                                        hrp.CFrame = bestCoin.CFrame
-                                end
-                        end
+    while true do
+        task.wait(0.18)
+        if autoFarm and farmingActive and not resetting then
+            local character = LocalPlayer.Character
+            if character then
+                local hrp = character:WaitForChild("HumanoidRootPart")
+
+                -- инвалидация цели: монета исчезла или больше нет TouchInterest
+                if currentTarget then
+                    if not currentTarget.Parent
+                        or not currentTarget:FindFirstChild("TouchInterest") then
+                        currentTarget = nil
+                    end
                 end
+
+                -- нет цели — ищем ближайшую монету
+                if not currentTarget then
+                    local bestDist = math.huge
+                    for _, v in ipairs(workspace:GetChildren()) do
+                        local cc = v:FindFirstChild("CoinContainer")
+                        if cc then
+                            for _, coin in ipairs(cc:GetChildren()) do
+                                if coin:IsA("BasePart")
+                                    and coin:FindFirstChild("TouchInterest") then
+                                    local d = (hrp.Position - coin.Position).Magnitude
+                                    if d < bestDist then
+                                        bestDist = d
+                                        currentTarget = coin
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                -- есть цель — двигаемся к ней шагом
+                if currentTarget then
+                    local targetPos = currentTarget.Position
+                    local currentPos = hrp.Position
+                    local dist = (currentPos - targetPos).Magnitude
+
+                    if dist <= REACH then
+                        -- достигли монеты — сбрасываем, следующий тик выберет новую
+                        currentTarget = nil
+                    else
+                        local direction = (targetPos - currentPos).Unit
+                        local moveStep  = math.min(STEP, dist)
+                        hrp.CFrame = CFrame.new(currentPos + direction * moveStep)
+                    end
+                end
+            end
         end
+    end
 end)
