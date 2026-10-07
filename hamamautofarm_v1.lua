@@ -20,8 +20,6 @@ local coinsCollected = 0
 local currentTarget  = nil
 local scanTimer      = 0
 
-local SPEED         = 60
-local smoothAlpha   = 0.6
 local REACH         = 5
 local SCAN_INTERVAL = 0.3
 
@@ -34,8 +32,8 @@ gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 340, 0, 320)
-main.Position = UDim2.new(0.5, -170, 0.5, -160)
+main.Size = UDim2.new(0, 340, 0, 280)
+main.Position = UDim2.new(0.5, -170, 0.5, -140)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = Color3.fromRGB(8, 12, 25)
 main.BackgroundTransparency = 0
@@ -112,8 +110,8 @@ local closeCorner = Instance.new("UICorner")
 closeCorner.Parent = closeBtn
 
 local content = Instance.new("Frame")
-content.Size = UDim2.new(0.94, 0, 0.80, 0)
-content.Position = UDim2.new(0.03, 0, 0.15, 0)
+content.Size = UDim2.new(0.94, 0, 0.78, 0)
+content.Position = UDim2.new(0.03, 0, 0.17, 0)
 content.BackgroundColor3 = Color3.fromRGB(10, 18, 32)
 content.BackgroundTransparency = 0.15
 content.BorderSizePixel = 0
@@ -139,103 +137,6 @@ local function setToggle(toggle, knob, on)
     knob.Position = on and KNOB_ON_POS or KNOB_OFF_POS
     toggle.BackgroundColor3 = on and TOGGLE_ON_COLOR or TOGGLE_OFF_COLOR
     knob.BackgroundColor3 = KNOB_COLOR
-end
-
-local function makeSlider(parent, yPos, labelText, minVal, maxVal, defaultVal, onChange)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0.60, 0, 0, 18)
-    lbl.Position = UDim2.new(0.03, 0, 0, yPos)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.GothamSemibold
-    lbl.TextSize = 13
-    lbl.TextColor3 = Color3.fromRGB(200, 230, 255)
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Text = labelText
-    lbl.Parent = parent
-
-    local valLbl = Instance.new("TextLabel")
-    valLbl.Size = UDim2.new(0.28, 0, 0, 18)
-    valLbl.Position = UDim2.new(0.70, 0, 0, yPos)
-    valLbl.BackgroundTransparency = 1
-    valLbl.Font = Enum.Font.GothamBold
-    valLbl.TextSize = 13
-    valLbl.TextColor3 = Color3.fromRGB(60, 160, 255)
-    valLbl.TextXAlignment = Enum.TextXAlignment.Right
-    valLbl.Parent = parent
-
-    local track = Instance.new("Frame")
-    track.Size = UDim2.new(0.88, 0, 0, 6)
-    track.Position = UDim2.new(0.06, 0, 0, yPos + 22)
-    track.BackgroundColor3 = Color3.fromRGB(30, 50, 80)
-    track.BorderSizePixel = 0
-    track.ClipsDescendants = false
-    track.Parent = parent
-
-    local trackCorner = Instance.new("UICorner")
-    trackCorner.CornerRadius = UDim.new(1, 0)
-    trackCorner.Parent = track
-
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new(0, 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(60, 160, 255)
-    fill.BorderSizePixel = 0
-    fill.ZIndex = 2
-    fill.Parent = track
-
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
-
-    local thumb = Instance.new("Frame")
-    thumb.Size = UDim2.new(0, 14, 0, 14)
-    thumb.AnchorPoint = Vector2.new(0.5, 0.5)
-    thumb.Position = UDim2.new(0, 0, 0.5, 0)
-    thumb.BackgroundColor3 = Color3.fromRGB(245, 250, 255)
-    thumb.BorderSizePixel = 0
-    thumb.ZIndex = 3
-    thumb.Parent = track
-
-    local thumbCorner = Instance.new("UICorner")
-    thumbCorner.CornerRadius = UDim.new(1, 0)
-    thumbCorner.Parent = thumb
-
-    local function setValue(val)
-        val = math.clamp(val, minVal, maxVal)
-        local pct = (val - minVal) / (maxVal - minVal)
-        fill.Size = UDim2.new(pct, 0, 1, 0)
-        thumb.Position = UDim2.new(pct, 0, 0.5, 0)
-        valLbl.Text = tostring(math.round(val))
-        onChange(val)
-    end
-
-    setValue(defaultVal)
-
-    local draggingSlider = false
-
-    track.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            draggingSlider = true
-            local relX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, track.AbsoluteSize.X)
-            setValue(minVal + (maxVal - minVal) * (relX / track.AbsoluteSize.X))
-        end
-    end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            draggingSlider = false
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if draggingSlider and (
-            input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch) then
-            local relX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, track.AbsoluteSize.X)
-            setValue(minVal + (maxVal - minVal) * (relX / track.AbsoluteSize.X))
-        end
-    end)
 end
 
 local farmLabel = Instance.new("TextLabel")
@@ -304,17 +205,9 @@ local resetKnobCorner = Instance.new("UICorner")
 resetKnobCorner.CornerRadius = UDim.new(1, 0)
 resetKnobCorner.Parent = resetKnob
 
-makeSlider(inner, 82, "🚀 Speed (studs/s)", 20, 200, 60, function(val)
-    SPEED = val
-end)
-
-makeSlider(inner, 120, "✨ Smoothness (1=crisp, 10=floaty)", 1, 10, 5, function(val)
-    smoothAlpha = 1.0 - (val - 1) / 9 * 0.92
-end)
-
 local antiAFKBtn = Instance.new("TextButton")
 antiAFKBtn.Size = UDim2.new(0.9, 0, 0, 34)
-antiAFKBtn.Position = UDim2.new(0.05, 0, 0, 160)
+antiAFKBtn.Position = UDim2.new(0.05, 0, 0, 134)
 antiAFKBtn.BackgroundColor3 = Color3.fromRGB(55, 130, 200)
 antiAFKBtn.Font = Enum.Font.GothamBold
 antiAFKBtn.TextSize = 15
@@ -328,7 +221,7 @@ antiAFKCorner.Parent = antiAFKBtn
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(0.9, 0, 0, 26)
-statusLabel.Position = UDim2.new(0.05, 0, 0, 208)
+statusLabel.Position = UDim2.new(0.05, 0, 0, 184)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextSize = 14
@@ -392,7 +285,7 @@ end)
 local minimized = false
 minBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
-    main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 320)
+    main.Size = minimized and UDim2.new(0, 340, 0, 56) or UDim2.new(0, 340, 0, 280)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
@@ -411,36 +304,14 @@ antiAFKBtn.MouseButton1Click:Connect(function()
         or Color3.fromRGB(55, 130, 200)
 end)
 
-local function disableMapCollisions()
-    local charSet = {}
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Character then
-            charSet[plr.Character] = true
-        end
-    end
-    for _, obj in ipairs(workspace:GetChildren()) do
-        if not charSet[obj] and not obj:IsA("Camera") and not obj:IsA("Terrain") then
-            if obj:IsA("BasePart") then
-                obj.CanCollide = false
-            end
-            for _, part in ipairs(obj:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            end
-        end
-    end
-end
-
 farmToggle.MouseButton1Click:Connect(function()
     autoFarm = not autoFarm
     setToggle(farmToggle, farmKnob, autoFarm)
     farmingActive = autoFarm and roundActive
-    if autoFarm and roundActive then
-        disableMapCollisions()
-        scanTimer = SCAN_INTERVAL
-    else
+    if not autoFarm then
         currentTarget = nil
+    else
+        scanTimer = SCAN_INTERVAL
     end
 end)
 
@@ -493,10 +364,6 @@ RoundStart.OnClientEvent:Connect(function()
     resetting     = false
     currentTarget = nil
     scanTimer     = SCAN_INTERVAL
-    if autoFarm then
-        task.wait(1)
-        disableMapCollisions()
-    end
 end)
 
 RoundEndFade.OnClientEvent:Connect(function()
@@ -541,23 +408,7 @@ RunService.Heartbeat:Connect(function(dt)
         currentTarget = bestCoin
     end
 
-    if not currentTarget then return end
-
-    local targetPos  = currentTarget.Position
-    local currentPos = hrp.Position
-    local dist = (currentPos - targetPos).Magnitude
-
-    if dist <= REACH then
-        hrp.CFrame = CFrame.new(targetPos)
-        currentTarget = nil
-        scanTimer = SCAN_INTERVAL
-    else
-        local lerpFactor = math.min(smoothAlpha * dt * 60, 1)
-        local moveVec = (targetPos - currentPos) * lerpFactor
-        local maxDist = SPEED * dt
-        if moveVec.Magnitude > maxDist then
-            moveVec = moveVec.Unit * maxDist
-        end
-        hrp.CFrame = CFrame.new(currentPos + moveVec)
+    if currentTarget then
+        hrp.CFrame = CFrame.new(currentTarget.Position)
     end
 end)
